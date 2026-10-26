@@ -16,7 +16,7 @@ App(NanoHTTPD :8080) ──SetAVTransportURI(URL)──► Sonos :1400 /AVTransp
         └────────── GET /stream/<fileId>（Range）───────┘
 ```
 
-包名 `com.sonoscast.local`，当前 **1.0.2 (versionCode 33)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ LOCAL STREAM，minSdk 26 / targetSdk 35。
+包名 `com.sonoscast.local`，当前 **1.1 (versionCode 42)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ LOCAL STREAM，minSdk 26 / targetSdk 35。
 
 ---
 
@@ -69,7 +69,7 @@ cd "C:\Users\C\Desktop\AI\SONOS本地播放apk开发\SonosLocalCast"
 ```powershell
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 & $adb devices                                     # 手机需先开「USB 调试」或用无线调试配对
-& $adb install -r "dist\ZONOZ-LOCAL-STREAM-v1.0.2.apk"
+& $adb install -r "dist\ZONOZ-LOCAL-STREAM-v1.1.apk"
 & $adb logcat -s SonosCast                          # App 的日志 TAG 就是 SonosCast
 
 # 截图：adb pull 直接落到含中文的工作区路径会失败，先拉到 TEMP 再拷进来
@@ -87,8 +87,8 @@ Copy-Item "$env:TEMP\s1.png" "deploy\shots\p1.png"
 
 ## 6. 实测到的家庭环境
 
-- 手机：Redmi K80 Pro = `Redmi K80 Pro`（Android 16 / API 36），之前 IP `192.168.1.5`
-- 电脑：`192.168.1.2`
+- 手机：Redmi K80 Pro = `Redmi K80 Pro`（Android 16 / API 36），之前 IP `192.168.1.20`
+- 电脑：`192.168.1.10`
 - 音箱：**客厅一对 Play:1 立体声配对**（S2，固件 86.10-81100）
   - `.4` = `RINCON_XXXXXXXXXXXXXXXXXX` = **主箱 / RF / Coordinator**
   - `.3` = `RINCON_YYYYYYYYYYYYYYYYYY` = **从箱 / LF / Invisible=1**
@@ -748,3 +748,125 @@ Sonos 文档对双击播放键的措辞是 "press twice to skip a track (when ap
 - release/更新日志.md 与仓库 CHANGELOG.md 改为中英双语，并把 1.0.2–1.0.5 的条目合并叙述
 
 > 以后发版：只改 versionName（1.0.3 …），versionCode 继续 +1。
+
+## 20. 构建 / 安装脚本（省掉每次重敲的四行）
+
+`SonosLocalCast/` 下新增两个脚本，替代 §3 里那串手动命令：
+
+```powershell
+cd SonosLocalCast
+.\build.ps1                  # release（默认离线）
+.\build.ps1 -Mode Debug      # debug
+.\build.ps1 -Clean           # 先 clean 再构建
+.\build.ps1 -NoOffline       # 允许联网解析依赖
+
+.\install.ps1                # 装 release 并回读 versionName / versionCode
+.\install.ps1 -Mode Debug
+.\install.ps1 -Log 15        # 装完跟 15 秒 SonosCast 日志
+```
+
+- 两个脚本自己拼 `JAVA_HOME` / `GRADLE_USER_HOME`；找不到 JDK 或 Gradle 会直接报错退出。
+- `build.ps1` 结束打印 APK 路径、大小、**SHA-256**，可直接贴进更新日志。
+- `install.ps1` 没设备时报"没有已连接的设备"，不会静默失败。
+- 实测 `build.ps1 -Mode Release` 增量 12s，产物 SHA-256 与已发布的
+  `FEA59E93…1149` 完全一致 —— **构建可复现**。
+
+> 踩坑：`install.ps1` 最初把参数取名 `-Debug`，与 `[CmdletBinding()]` 自带的通用参数冲突
+> （报"已为命令多次定义名为 Debug 的参数"），改成 `-Mode Debug` 才通过。
+> 另外 PowerShell 里别给 `$args` 之类自动变量赋值，脚本里用的是 `$gradleArgs`。
+>
+> 第二个坑：`$out -notmatch 'Success'` 在 `$out` 是**数组**时返回的是"不匹配的元素数组"，
+> 非空即为真 → 明明装成功却判失败。必须先 `$text = ($out | Out-String)` 再 `-match`。
+> 实测通过：`已安装 : 1.0.2 (versionCode 33)`，退出码 0；`-Log 8` 能正常跟日志 8 秒。
+
+## 21. 迭代手册（skill）
+
+本项目全部经验沉淀在 **`skills/zonoz-local-stream/`**，新会话先读这一份：
+
+```
+skills/zonoz-local-stream/
+├── SKILL.md                        入口：铁律、工程坐标、构建/验证/发版速查
+└── references/
+    ├── sonos-protocol.md           队列序列、实测上限、三道自检、状态同步
+    ├── build-and-release.md        工具链、沙箱约束、发版清单、GitHub 推送
+    └── pitfalls.md                 按痛苦程度排序的踩坑总账（A~E）
+```
+
+**为什么放在工程里而不是 harness 的 skill 目录**：本机 DSH 的 skill 来自 `app.asar`
+（解包到 `E:\DSH\resources\runtime\office-skills`），该目录**只读**；
+`%USERPROFILE%\.dsh\skills` 也不存在且在工作区外（沙箱拒写）。
+所以采用"随项目走"的方式，靠本文件（AGENTS.md 每会话自动加载）做入口索引。
+
+**五条最贵的教训**（详见 `pitfalls.md`）：
+
+1. 文件内容不要用 shell 生成——反引号会把字母吞掉（`` `v ``→VT、`` `r ``→CR）
+2. Sonos 的"200 成功"必须读回来验证（`NrTracks` / `<Track>`）
+3. 分批入队：每批 12 条上限、插入位置必须逐批递增
+4. 改播放链路时两条入口（`startTrack` / `castCurrent`）都要改
+5. UI 不能自动化，交互验证交给用户并给出日志关键字
+
+## 22. 1.1：终于修好"点 A 播 B"的四个根因
+
+四个真凶叠在一起，每个都用真机数据证实过。**改这类代码前先读本节。**（1.0.3–1.0.10 是内部迭代，对外统一发布为 **1.1**。）
+
+### 22.1 `NrTracks` 读的是"当前传输"，不是队列长度
+
+`GetMediaInfo.NrTracks` 反映**当前 transport** 的曲目数。入队后、还没把传输切到
+`x-rincon-queue` 时读它，拿到的是上一首单曲的 `1`。真机实测：
+
+| 步骤 | `NrTracks` |
+| --- | --- |
+| transport = 单曲 URL | 1 |
+| 入队 12 首、transport 未变 | **1** |
+| 切到队列 transport 后 | **12** |
+
+**自检顺序必须是：入队 → 切传输 → 再读 `NrTracks`。**
+1.0.2–1.0.6 写反了，于是每次重建都被自己的自检否决，永远退回单曲推送。
+
+### 22.2 fileId 必须由 Uri 确定性派生
+
+旧实现把 `System.nanoTime()` 混进去，同一首歌每次注册都换 ID：自检比的是两个不同 ID
+（必不相等）、重建后旧 URL 全 404、注册表无限增长。现在为 `md5(uri)` 前 12 位，
+可用 `deploy/verify_playback.py` 独立复算对照。
+
+### 22.3 批量注册不能动 `MediaRegistry.current`
+
+`registerTrack()` 会写 `_current`。建 72 首队列时用它，建完 current 变成**最后一首**；
+一旦退回单曲推送就推那一首 → 点 A 播 C。批量场景一律 `registerTrackSilently()`。
+
+### 22.4 随机与单曲循环必须互斥
+
+`orderFor()` 曾先判 `repeatMode == ONE` 再判随机 → 从单曲循环切到随机时清单仍是 1 首；
+`nativePlayMode()` 同理会发 `REPEAT_ONE`（单曲死循环）。现在随机优先，开随机时把循环置回 ALL。
+
+### 22.5 验证方法（以后必须这么做）
+
+```powershell
+cd deploy
+python verify_playback.py <歌名>      # 四方比对，五项全过才算通过
+python ntracks_probe.py               # 证实 NrTracks 跟着传输走
+python seek_probe.py                  # 证实 Seek(TRACK_NR) 语义
+```
+
+判据：`NrTracks == 清单长度`、`Track == 日志序号`、`TrackURI` 含期望 fileId、
+日志有 `声画一致：…✓`。**只在"日志看起来对"时不许下结论**——1.0.3 就是这么翻车的。
+## 23. 1.1：切随机/循环不再让当前歌从头播
+
+重建队列（`RemoveAllTracksFromQueue` + 重新入队）会把播放位置归零，
+所以"切随机 → 这首从头开始"曾经是个稳定复现的现象。现在的处理：
+
+1. `recastIfQueueActive()` 记下当前秒数，传给 `castNativeQueue(resumeAtSec = …)`；
+2. 重建后 `Seek(TRACK_NR)` 定位曲目，再 `Seek(REL_TIME)` 回到原秒数，然后 `Play`；
+3. 重建失败退回单曲推送时，同样 `Seek(REL_TIME)` 补回位置；
+4. 原本是**暂停**状态，重建完仍然是暂停（不会自己放起来）。
+
+实测（真机）：`pause → Seek(REL_TIME 120s) → play → 3 秒后 RelTime = 122s` ✓；
+用户实测：Love Song 播到 1:10 时点随机，日志 `重建后恢复到 70s`，42 秒后读回 110s ✓。
+
+另外两处配套修正：
+
+- `<Track>` / `TrackURI` 的校验收成**轮询**（4 次 × 300ms），读一次就判会误杀；
+  误杀的后果是退回单曲推送——那一步同样会把歌从头播。
+- `recastIfQueueActive` 的四个提前返回都有日志
+  （`当前不是队列模式` / `上一次推送还没结束` / `没有当前曲目` / `没有选中音箱`），
+  便于区分"没触发"和"触发了但失败"。

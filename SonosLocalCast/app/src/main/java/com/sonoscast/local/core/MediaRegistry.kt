@@ -63,7 +63,18 @@ object MediaRegistry {
      * 元信息（标题/MIME/大小）扫描时已经拿到了，这里完全不做 IO ——
      * 用户点一下就能立刻推给音箱。真正的文件读取发生在音箱回拉 HTTP 的那一刻。
      */
-    fun registerTrack(track: Track): MediaItem {
+    fun registerTrack(track: Track): MediaItem = registerTrack(track, makeCurrent = true)
+
+    /**
+     * 批量建队列时用：只登记，**不改变"当前曲"**。
+     *
+     * 1.0.3 的 bug：建 72 首队列时调的是 registerTrack()，它会把 _current 改成
+     * 最后一首；一旦队列路径失败退回单曲推送，推出去的就是那一首 ——
+     * 用户点 A、出声是 C。批量场景必须用这个。
+     */
+    fun registerTrackSilently(track: Track): MediaItem = registerTrack(track, makeCurrent = false)
+
+    private fun registerTrack(track: Track, makeCurrent: Boolean): MediaItem {
         val fileId = newFileId(track.uri)
         val item = MediaItem(
             fileId = fileId,
@@ -74,7 +85,7 @@ object MediaRegistry {
             urlSuffix = MimeTypes.urlSuffix(track.mimeType)
         )
         items[fileId] = item
-        _current.value = item
+        if (makeCurrent) _current.value = item
         return item
     }
 
@@ -141,8 +152,23 @@ object MediaRegistry {
         item
     }
 
+    /**
+     * 由 Uri 派生的**稳定**短 ID（12 位十六进制）。
+     *
+     * 1.0.3 的 bug：这里曾经混入 `System.nanoTime()`，
+     * 于是**同一首歌每次注册都得到不同的 fileId**：
+     * - 同一批入队里，"期望 ID"和"实际入队 ID"永远不相等 → 校验必然失败；
+     * - 重建队列后旧 URL 全部 404；
+     * - items 映射无限增长。
+     * 现在改为对 Uri 做 MD5 取前 12 位：同一首歌永远是同一个 ID。
+     */
     private fun newFileId(uri: Uri): String {
-        val raw = (uri.toString().hashCode().toLong() and 0xFFFFFFFFL) xor (System.nanoTime() shr 8)
-        return java.lang.Long.toHexString(raw).padStart(8, '0').takeLast(12)
+        val digest = java.security.MessageDigest.getInstance("MD5")
+            .digest(uri.toString().toByteArray(Charsets.UTF_8))
+        val sb = StringBuilder(12)
+        for (i in 0 until 6) {
+            sb.append(String.format(Locale.US, "%02x", digest[i]))
+        }
+        return sb.toString()
     }
 }

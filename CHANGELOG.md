@@ -9,6 +9,144 @@ ZONOZ LOCAL STREAM —— 把手机本地音乐通过局域网直接推给 Sonos
 
 ---
 
+## v1.1 — 2026-10-27
+
+### 中文
+
+修掉「点 A 播 B」——这次找到了全部四个真凶，每一条都有真机数据佐证。
+
+**1. `NrTracks` 读的是"当前传输"，不是"队列长度"**
+
+入队后、还没把传输切到队列时读 `GetMediaInfo`，它报的是**上一首单曲**的 `NrTracks=1`，
+于是队列长度自检必然误判 → 每次都退回单曲推送 → 音箱里根本没有队列。
+
+真机实测（同一台音箱，逐步读回）：
+
+| 步骤 | `NrTracks` |
+| --- | --- |
+| 传输是单曲 URL | 1 |
+| 入队 12 首、未切传输 | **1** ← 读到的是旧传输 |
+| 切到队列传输后 | **12** ← 队列真实长度 |
+
+修法：**先 `SetAVTransportURI(x-rincon-queue)` 再读 `NrTracks`**。
+
+**2. fileId 每次注册都变**
+
+旧实现把 `System.nanoTime()` 混进 fileId，同一首歌每次注册都得到不同 ID：
+
+- 自检拿"期望 ID"和"实际入队 ID"对比 → 永远不相等 → 永远判定失败
+- 重建队列后旧 URL 全部 404
+- 注册表无限增长
+
+修法：改为 `md5(uri)` 取前 12 位，同一首歌永远同一个 ID。
+
+**3. 批量建队列会把"当前曲"改成最后一首**
+
+`registerTrack()` 会顺带写 `MediaRegistry.current`。建 72 首队列时调它，
+建完后 current 变成清单最后一首；一旦退回单曲推送，推出去的就是那一首 → **点 A 播 C**。
+
+修法：新增 `registerTrackSilently()`，批量场景只登记不改 current。
+
+**4. 随机与单曲循环的状态互相矛盾**
+
+`orderFor()` 先判"单曲循环"再判"随机"，于是从单曲循环切到随机时清单仍是 **1 首**；
+`nativePlayMode()` 同理会给音箱发 `REPEAT_ONE`（单曲无限循环）。
+
+修法：随机优先；开随机时同时把循环置回列表循环。
+
+**附带修复**：点歌序号按"用户点的曲目 id"反查（`pendingTrackId`），不再用会被轮询覆盖的
+`queueIndex`；推歌前后 1.5 秒内不跟随音箱序号，避免高亮被抢走。
+
+**验证方式**（脚本 `deploy/verify_playback.py`，四方比对）：
+
+```
+曲库 : 期望 fileId=2acd962429bb
+日志 : 第 1/72 首「奔跑」          fileId=2acd962429bb
+音箱 : NrTracks=72  Track=1       URI=…/stream/2acd962429bb.mp3
+  ✓ 点的是这首  ✓ fileId 稳定  ✓ 序号一致  ✓ 真的在放这首  ✓ 无声画不一致
+```
+
+回归：机身「下一首」→ App 跟随（`音箱切到了队列第 2 首 →「故乡」`）；机身暂停/恢复 → App 同步。
+**5. 切随机/循环不再让当前歌曲从头开始**
+
+重建队列会把播放位置归零，所以切模式后听到的是"这首从头播"。
+现在重建前后保留位置：Seek(REL_TIME) 回到原秒数，实测
+pause → seek 120s → play → 3 秒后 RelTime=122s，说明这条指令可靠。
+重建失败退回单曲推送的那条路也会 seek 回原位置；原本是暂停状态则保持暂停。
+
+**6. 校验不再"读一次就下结论"**
+
+<Track> 与 TrackURI 都改成轮询若干次再判断（音箱切流有延迟）。
+之前读得太早会误判成"定位不符"，进而退回单曲推送——那一步会把歌从头播。
+
+**7. 单曲循环 → 随机，播放清单恢复 72 首**
+
+orderFor() 的判定顺序改为"随机优先"，并且开随机时把循环置回列表循环；
+
+ativePlayMode() 也先看随机，避免给音箱发 REPEAT_ONE（单曲死循环）。
+
+> 版本说明：1.0.8 / 1.0.9 / 1.0.10 是内部迭代，统一并入 **1.1** 发布。
+
+### English
+
+Fixed "tap A, plays B" — this time with all four root causes found, each backed by
+measurements from the real speaker.
+
+**1. `NrTracks` reports the *current transport*, not the queue length**
+
+Reading `GetMediaInfo` after enqueueing but *before* switching the transport returns the
+previous single-URI transport's `NrTracks=1`, so the queue-length self-check always failed
+and the app silently fell back to single-URI pushes — the speaker never had a queue.
+
+Measured on the real speaker:
+
+| step | `NrTracks` |
+| --- | --- |
+| transport = single URL | 1 |
+| 12 tracks enqueued, transport unchanged | **1** |
+| transport switched to the queue | **12** |
+
+Fix: switch to `x-rincon-queue` **first**, then read `NrTracks`.
+
+**2. fileId changed on every registration**
+
+The old generator mixed `System.nanoTime()` into the id, so the same track got a new id on
+every call: the verification compared two different ids (always mismatched), old URLs 404'd
+after a rebuild, and the registry grew without bound.
+
+Fix: `md5(uri)` prefix (12 hex chars) — stable per track.
+
+**3. Bulk queue building overwrote "current track"**
+
+`registerTrack()` also writes `MediaRegistry.current`. Enqueuing 72 tracks left `current`
+pointing at the **last** track, so the single-URI fallback played that one — tap A, hear C.
+
+Fix: `registerTrackSilently()` for bulk paths.
+
+**4. Shuffle and repeat-one contradicted each other**
+
+`orderFor()` checked repeat-one before shuffle, so switching from single-repeat to shuffle
+left the queue at **1 track**; `nativePlayMode()` likewise sent `REPEAT_ONE` to the speaker.
+
+Fix: shuffle wins; enabling shuffle resets repeat to all.
+
+**Also**: the tap index is resolved from the track id the user tapped (`pendingTrackId`)
+instead of the poll-driven `queueIndex`, and index syncing is paused for 1.5 s around a cast.
+
+**Verification** (`deploy/verify_playback.py`, four-way comparison):
+
+```
+library : expected fileId=2acd962429bb
+log     : #1/72 "奔跑"           fileId=2acd962429bb
+speaker : NrTracks=72  Track=1   URI=…/stream/2acd962429bb.mp3
+  ✓ right track  ✓ stable id  ✓ index matches  ✓ actually playing it
+```
+
+Regression: hardware "next" makes the app follow (`queue track 2 →「故乡」`);
+hardware pause/resume sync both ways.
+
+---
+
 ## v1.0.2 — 2026-10-26
 
 ### 中文

@@ -219,6 +219,21 @@ class SonosSoapClient {
         }
     }
 
+    /**
+     * 当前这一首的 TrackURI —— 用来做**端到端校验**：
+     * 点歌后读回来，确认音箱放的确实是我们想推的那一首。
+     *
+     * 1.0.6 之前的 bug 正是靠这个能立刻发现（UI 指向 A、出声是 B）。
+     */
+    suspend fun getPlaybackTrackUri(device: SonosDevice): String? {
+        val result = avTransport(device, "GetPositionInfo", listOf("InstanceID" to "0"))
+        return if (result is SoapResult.Success) {
+            TRACK_URI.find(result.body)?.groupValues?.get(1)?.trim()
+        } else {
+            null
+        }
+    }
+
     /** 返回 PLAYING / PAUSED_PLAYBACK / STOPPED / TRANSITIONING 等 */
     suspend fun getTransportState(device: SonosDevice): String? {        val result = avTransport(device, "GetTransportInfo", listOf("InstanceID" to "0"))
         return if (result is SoapResult.Success) {

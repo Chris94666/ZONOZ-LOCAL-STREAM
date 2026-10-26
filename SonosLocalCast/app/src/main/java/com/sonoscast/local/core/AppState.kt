@@ -94,6 +94,10 @@ object AppState {
     fun setShuffle(enabled: Boolean) {
         if (shuffle.value == enabled) return
         shuffle.value = enabled
+        // 随机与单曲循环互斥：开随机时必须退出单曲循环，
+        // 否则 orderFor 会按"单曲循环"把清单收敛成 1 首，
+        // nativePlayMode 还会给音箱发 REPEAT_ONE（单曲无限循环）。
+        if (enabled) repeatMode.value = RepeatMode.ALL
         reorderQueue()
     }
 
@@ -122,6 +126,31 @@ object AppState {
     /** 清单里当前播放到第几首，-1 表示还没有 */
     val queueIndex = MutableStateFlow(-1)
 
+    /**
+     * 用户最近一次点歌的曲目 id。
+     *
+     * 点歌是"UI 改状态 → 发 Intent → Service 异步处理"，中间隔着一个轮询周期；
+     * 轮询会把 [queueIndex] 改成音箱当前那首，于是 Service 拿到的是旧序号，
+     * 结果 seek 到别的歌上（1.0.2/33 的"点 A 播 B"）。
+     * 这里记下用户真正点的那首，推送时按 id 反查序号，杜绝这个竞态。
+     */
+    private var pendingTrackId: Long? = null
+
+    fun markPendingTrack(track: Track) {
+        pendingTrackId = track.id
+    }
+
+    /** 取"用户点的那首"在清单里的序号，并清除标记；没有标记时退回 [queueIndex] */
+    fun takePendingQueueIndex(): Int {
+        val id = pendingTrackId
+        pendingTrackId = null
+        if (id != null) {
+            val i = queue.value.indexOfFirst { it.id == id }
+            if (i >= 0) return i
+        }
+        return queueIndex.value
+    }
+
     /** 未打乱的原始顺序（用户点歌时所在的列表），关随机时用来还原 */
     private var queueSource: List<Track> = emptyList()
 
@@ -137,13 +166,16 @@ object AppState {
         queueSource = source
         val ordered = orderFor(source, current)
         queue.value = ordered
-        queueIndex.value = ordered.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
+        val found = ordered.indexOfFirst { it.id == current.id }
+        queueIndex.value = if (found >= 0) found else 0
+        markPendingTrack(current)
     }
 
     /** 把清单指针移到指定曲目（不在清单里则忽略） */
     fun setQueueTrack(track: Track) {
         val idx = queue.value.indexOfFirst { it.id == track.id }
         if (idx >= 0) queueIndex.value = idx
+        markPendingTrack(track)
     }
 
     /** 上/下一首：按清单循环走，返回目标曲目 */
@@ -212,10 +244,14 @@ object AppState {
      */
     private fun orderFor(source: List<Track>, current: Track?): List<Track> {
         if (current == null) return source
+        // 随机优先于单曲循环：开了随机就该看到**整库打乱**的 72 首，
+        // 不能被残留的"单曲循环"压成 1 首（用户实测：单曲循环→随机，清单只剩 1 首）
+        if (shuffle.value) {
+            val rest = source.filter { it.id != current.id }.shuffled()
+            return listOf(current) + rest
+        }
         if (repeatMode.value == RepeatMode.ONE) return listOf(current)
-        if (!shuffle.value) return source
-        val rest = source.filter { it.id != current.id }.shuffled()
-        return listOf(current) + rest
+        return source
     }
 
     private fun reorderQueue() {
