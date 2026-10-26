@@ -15,6 +15,12 @@
 
 ---
 
+## Screenshots / 应用截图
+
+| Player | Library | Settings | About |
+| :---: | :---: | :---: | :---: |
+| <img src="docs/screenshots/player.jpg" width="220" /> | <img src="docs/screenshots/library.jpg" width="220" /> | <img src="docs/screenshots/setting.jpg" width="220" /> | <img src="docs/screenshots/about.jpg" width="220" /> |
+
 ## 功能
 
 - **本地曲库**：扫描手机音乐目录（Android 11+ 走 SAF，未入库的文件也能读到），支持搜索、A-Z 索引、按标题/时间/大小/时长排序
