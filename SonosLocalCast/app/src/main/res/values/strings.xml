@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZONOZ LOCAL STREAM</string>
+    <string name="notification_channel_name">本地推播服务</string>
+    <string name="notification_channel_desc">保持局域网媒体服务与音箱控制连接</string>
+</resources>

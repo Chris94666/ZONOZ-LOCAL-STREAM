@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      仅作为 Compose 的宿主主题：不带 ActionBar，状态栏/导航栏透明交给 enableEdgeToEdge() 处理。
+      真正的配色在 ui/theme/Theme.kt 中的 Material 3 ColorScheme 里定义。
+
+      windowBackground 必须是纯黑：
+      App 全黑界面，页面切换有滑动动画，两个页面平移时中间会露出窗口背景 ——
+      原来是 #FBF8FF（近白），于是每个过渡都闪一条白边/白屏。
+      这里（浅色资源目录）和 values-night 都统一成 #000000。
+    -->
+    <style name="Theme.SonosLocalCast" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:colorBackground">#000000</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+</resources>

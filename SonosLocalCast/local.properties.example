@@ -1,0 +1,15 @@
+# 复制本文件为 local.properties（该文件不会被提交）
+#
+# Android SDK 路径：
+#   Windows: sdk.dir=C\:\\Users\\<你>\\AppData\\Local\\Android\\Sdk
+#   macOS  : sdk.dir=/Users/<你>/Library/Android/sdk
+#   Linux  : sdk.dir=/home/<你>/Android/Sdk
+sdk.dir=/path/to/Android/Sdk
+
+# ---------------------------------------------------------------- 可选：release 签名
+# 不填也能编译，只是 release 产物未签名。
+# 也可以用环境变量代替：ZONOZ_STORE_FILE / ZONOZ_STORE_PASSWORD / ZONOZ_KEY_ALIAS / ZONOZ_KEY_PASSWORD
+#signing.storeFile=../keystore/zonoz.jks
+#signing.storePassword=******
+#signing.keyAlias=zonoz
+#signing.keyPassword=******

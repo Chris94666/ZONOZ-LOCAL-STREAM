@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ========== 网络与局域网 ========== -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!-- 接收 SSDP 多播/广播响应（部分路由器/固件会以组播方式回包） -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- ========== 前台服务 ========== -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Android 13+ 展示常驻通知需要用户授权 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 熄屏后保持 HTTP 服务存活 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
+      锁屏续播：曲目放完要有人把服务叫醒去推下一首。
+      SCHEDULE_EXACT_ALARM 在 Android 12+ 属于用户可撤销权限，未授权时代码会退回
+      setAndAllowWhileIdle（可能延迟），不会崩。
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!-- 引导用户把本应用排除在电池优化之外（Doze 会切断网络，续播依赖它） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- ========== 音乐库（只读媒体库索引，不上传任何内容） ========== -->
+    <!-- Android 13+ 用细分的音频权限；12 及以下退到读外部存储 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- Wi-Fi 状态可读（用于判断是否已连上局域网） -->
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
+
+    <application
+        android:name=".SonosCastApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SonosLocalCast"
+        android:usesCleartextTraffic="true"
+        tools:targetApi="35">
+
+        <!--
+          usesCleartextTraffic="true"：全程 http:// 明文局域网通信（Sonos 的 1400 端口只支持 HTTP，
+          本地媒体服务也走 HTTP）。若不开启，OkHttp 与 WebView 都会被 NetworkSecurityPolicy 拦截。
+        -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.SonosLocalCast"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          foregroundServiceType 说明：
+            dataSync      —— 本服务本质是在局域网内持续对外提供媒体数据流
+            mediaPlayback —— 兜底：Android 15 对 dataSync 类型有 6 小时/24 小时累计限制，
+                             而长片/整张专辑连续播放很容易触顶。mediaPlayback 无此限制。
+          两个类型都在 manifest 中声明，运行时 startForeground 时按需传入。
+        -->
+        <service
+            android:name=".service.SonosCastService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync|mediaPlayback" />
+
+        <!--
+          续播闹钟的落点。进程被冻结/回收时，只有精确闹钟能把系统叫醒并投递这条广播；
+          收到后再由它显式拉起前台服务去推下一首。不导出，外部无法触发。
+        -->
+        <receiver
+            android:name=".service.AutoAdvanceReceiver"
+            android:exported="false" />
+
+    </application>
+
+</manifest>
