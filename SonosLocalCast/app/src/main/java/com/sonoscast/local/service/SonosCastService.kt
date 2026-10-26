@@ -116,6 +116,23 @@ class SonosCastService : Service() {
     /** 提前停止后尝试续播的次数（每次推送清零），避免无限循环 */
     private var earlyStopRetries = 0
 
+    /**
+     * 音箱原生队列模式：把整条播放清单灌进音箱，之后由音箱自己切歌。
+     *
+     * 这样机身的上一首/下一首（含双击播放键）才有意义，随机/循环也交给音箱执行。
+     * 任何一步失败都退回"逐首推 URL"的老路子，保证不会因为队列 API 不能用而放不了歌。
+     */
+    private var nativeQueueActive = false
+
+    /** 音箱队列里当前装的是哪一份清单（数量 + 首尾 id 的指纹），变了才重建 */
+    private var sonosQueueSignature = ""
+
+    /** 上一次看到的队列序号（1 起）；机身按键切歌就是靠它发现 */
+    private var lastQueueTrack = 0
+
+    /** 手动拖动音量后的一小段时间内不接受回读，避免滑块来回跳 */
+    private var lastVolumeSetAt = 0L
+
     /** 每 30 分钟续一次 WakeLock / WifiLock，避免 4 小时超时后熄屏断流 */
     private var lockRenewalJob: Job? = null
 
@@ -434,7 +451,13 @@ class SonosCastService : Service() {
             LogBus.w("上一次推送尚未结束，忽略本次请求")
             return
         }
-        scope.launch { performCast(item, targets) }
+        scope.launch {
+            // 点歌也要先试原生队列 —— 这里曾经只调 performCast，
+            // 结果只有"上一首/下一首"会建队列，用户点歌时永远是单曲推送（1.0.2 的漏改）。
+            if (castNativeQueue(targets, AppState.queueIndex.value)) return@launch
+            nativeQueueActive = false
+            performCast(item, targets)
+        }
     }
 
     private suspend fun performCast(item: MediaItem, targets: List<SonosDevice>) {
@@ -698,6 +721,26 @@ class SonosCastService : Service() {
         cancelAutoAdvance()
         lastAdvanceAt = SystemClock.elapsedRealtime()
 
+        // 原生队列模式：直接让音箱切 —— 和机身按键走的是同一条路径，
+        // 这样"手机点下一首"和"音箱按下一首"行为完全一致。
+        if (nativeQueueActive) {
+            val targets = AppState.controlTargets().filterNot { it.isSatellite }
+            if (targets.isNotEmpty()) {
+                scope.launch {
+                    targets.forEach { device ->
+                        val result =
+                            if (offset > 0) soap.nextTrack(device) else soap.previousTrack(device)
+                        if (result !is SoapResult.Success) {
+                            LogBus.w("音箱切歌失败：${describeSoapFailure(result)}")
+                        }
+                    }
+                }
+                // 序号交给轮询纠正，这里只先把界面推进一格，点击才有反馈
+                AppState.step(offset)?.let { MediaRegistry.registerTrack(it) }
+                return
+            }
+        }
+
         ensureQueueReady()
 
         val repeatOne = AppState.repeatMode.value == RepeatMode.ONE && !AppState.shuffle.value
@@ -722,8 +765,181 @@ class SonosCastService : Service() {
         startTrack(next)
     }
 
-    /** 清单没建立时用曲库兜底，避免"上一首/下一首"点了没反应 */
-    private fun ensureQueueReady() {
+    // ------------------------------------------------------- 音箱原生队列
+
+    /**
+     * 把整条播放清单灌进音箱队列，并从第 [index] 首开始播。
+     *
+     * 相比"一首一首推 URL"：
+     * 1. 机身的上一首/下一首（含双击播放键）终于有东西可切；
+     * 2. 随机 / 循环由音箱自己执行，歌与歌之间没有空隙；
+     * 3. 手机进程被杀也不影响这一首放完。
+     *
+     * @return false = 这条路走不通，调用方应退回单曲推送
+     */
+    private suspend fun castNativeQueue(targets: List<SonosDevice>, index: Int): Boolean {
+        val queue = AppState.queue.value
+        // 只有一首时没必要建队列（单曲循环还更简单），S1 老固件也不冒险
+        if (queue.size < 2) {
+            LogBus.d("播放清单只有 ${queue.size} 首，不建队列，走单曲推送")
+            return false
+        }
+
+        val ip = AppState.localIp.value ?: run {
+            LogBus.w("本机局域网 IP 未知，无法建队列，走单曲推送")
+            return false
+        }
+        val port = AppState.serverPort.value
+        if (port <= 0) {
+            LogBus.w("HTTP 服务未就绪（port=$port），无法建队列，走单曲推送")
+            return false
+        }
+
+        val speakers = targets.filterNot { it.isSatellite }.filterNot { it.isLegacyS1 }
+        if (speakers.isEmpty()) {
+            LogBus.w("选中的设备里没有可用主箱（从箱/S1 被排除），走单曲推送")
+            return false
+        }
+
+        val signature = "${queue.size}|${queue.first().id}|${queue.last().id}|${AppState.shuffle.value}"
+        val needRebuild = !nativeQueueActive || signature != sonosQueueSignature
+
+        AppState.busy.value = true
+        return try {
+            for (speaker in speakers) {
+                AppState.setStatus(speaker.key, DeviceStatus.PUSHING)
+
+                if (needRebuild) {
+                    soap.removeAllTracksFromQueue(speaker)
+                    // 把整条清单准备成 (URL, DIDL) 再分批入队
+                    val entries = queue.map { track ->
+                        val item = MediaRegistry.registerTrack(track)
+                        val url = LocalMediaServer.buildStreamUrl(ip, port, item)
+                        url to SoapXml.didlLite(track.title, url, item.mimeType, track.id.toString())
+                    }
+                    if (!enqueueAll(speaker, entries)) {
+                        AppState.setStatus(speaker.key, DeviceStatus.IDLE)
+                        return false
+                    }
+                    // 自检：队列长度必须和清单一致，否则"点 A 播 B"
+                    val queueSize = soap.getQueueSize(speaker)
+                    if (queueSize != null && queueSize != queue.size) {
+                        LogBus.w(
+                            "音箱队列长度不符（音箱 $queueSize / 清单 ${queue.size}），" +
+                                "为避免播错歌，退回逐首推送"
+                        )
+                        AppState.setStatus(speaker.key, DeviceStatus.IDLE)
+                        return false
+                    }
+                    val transport = soap.setQueueTransport(speaker)
+                    if (transport !is SoapResult.Success) {
+                        LogBus.w("切换队列传输失败：${describeSoapFailure(transport)}，退回逐首推送")
+                        AppState.setStatus(speaker.key, DeviceStatus.IDLE)
+                        return false
+                    }
+                }
+
+                soap.setPlayMode(speaker, nativePlayMode())
+                soap.seekToTrack(speaker, index + 1)
+                // 自检：定位到第 index+1 首，读回来确认一次，否则会"点 A 播 B"
+                val positioned = soap.getQueueTrackNumber(speaker)
+                if (positioned != null && positioned != index + 1) {
+                    LogBus.w("队列定位不符（期望第 ${index + 1} 首，实际第 $positioned 首），重新定位")
+                    soap.seekToTrack(speaker, index + 1)
+                    val retry = soap.getQueueTrackNumber(speaker)
+                    if (retry != null && retry != index + 1) {
+                        LogBus.w("队列定位仍不符（第 $retry 首），退回逐首推送")
+                        AppState.setStatus(speaker.key, DeviceStatus.IDLE)
+                        return false
+                    }
+                }
+                val play = soap.play(speaker)
+                if (play !is SoapResult.Success) {
+                    LogBus.w("队列播放失败：${describeSoapFailure(play)}，退回逐首推送")
+                    AppState.setStatus(speaker.key, DeviceStatus.IDLE)
+                    return false
+                }
+                AppState.setStatus(speaker.key, DeviceStatus.PLAYING)
+            }
+
+            sonosQueueSignature = signature
+            nativeQueueActive = true
+            lastQueueTrack = index + 1
+            lastTransportState = "PLAYING"
+            earlyStopRetries = 0
+            castAtMs = SystemClock.elapsedRealtime()
+            castDurationMs = currentTrack()?.durationMs ?: 0L
+            AppState.hint.value = null
+            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING)
+            // 音箱自己会续播，本地计时器/闹钟全部撤掉（否则会和音箱抢着切歌）
+            cancelAutoAdvance()
+            LogBus.i("已把 ${queue.size} 首灌进音箱队列（${if (needRebuild) "重建" else "复用"}），从第 ${index + 1} 首开始")
+            true
+        } catch (t: Throwable) {
+            LogBus.w("原生队列异常：${t.javaClass.simpleName} ${t.message}，退回逐首推送")
+            false
+        } finally {
+            AppState.busy.value = false
+            updateNotification()
+        }
+    }
+
+    /**
+     * 分批把曲目塞进音箱队列。
+     *
+     * 实测（Play:1 / S2 86.10）：一次 `AddMultipleURIsToQueue` 最多 16 条，
+     * 18 条就返回 402/500 —— 之前的 24 条一批必然失败，于是每次都退回单曲推送，
+     * 机身的"下一首"也就永远无效。现在默认每批 12 条留余量。
+     */
+    private suspend fun enqueueAll(
+        speaker: SonosDevice,
+        entries: List<Pair<String, String>>
+    ): Boolean {
+        var index = 0
+        while (index < entries.size) {
+            val end = minOf(index + QUEUE_CHUNK_SIZE, entries.size)
+            // 关键：每批要放在"已入队数量 + 1"的位置。
+            // 1.0.4 把这里写死成 1，导致第二批开始都挤到队首，整个队列顺序被倒过来，
+            // 于是"点 A 播 B"（1.0.5 修）。
+            if (!enqueueChunk(speaker, entries.subList(index, end), index + 1)) return false
+            index = end
+        }
+        return true
+    }
+
+    /** 一批失败就对半拆开重试，直到单条；单条仍失败才算这条路走不通 */
+    private suspend fun enqueueChunk(
+        speaker: SonosDevice,
+        entries: List<Pair<String, String>>,
+        firstTrackNumber: Int
+    ): Boolean {
+        if (entries.isEmpty()) return true
+        val result = soap.addMultipleUrisToQueue(speaker, entries, firstTrackNumber)
+        if (result is SoapResult.Success) return true
+
+        if (entries.size == 1) {
+            LogBus.w("单条入队失败：${describeSoapFailure(result)}")
+            return false
+        }
+        LogBus.w("一次入队 ${entries.size} 首失败（${describeSoapFailure(result)}），对半拆分重试")
+        val mid = entries.size / 2
+        return enqueueChunk(speaker, entries.subList(0, mid), firstTrackNumber) &&
+            enqueueChunk(speaker, entries.subList(mid, entries.size), firstTrackNumber + mid)
+    }
+
+    /** App 的播放模式 → 音箱的 PlayMode */    private fun nativePlayMode(): String = when {
+        AppState.repeatMode.value == RepeatMode.ONE -> "REPEAT_ONE"
+        AppState.shuffle.value -> "SHUFFLE"
+        else -> "REPEAT_ALL"
+    }
+
+    private fun describeSoapFailure(result: SoapResult): String = when (result) {
+        is SoapResult.Fault -> "UPnP ${result.errorCode ?: "-"} ${result.description}"
+        is SoapResult.TransportError -> result.message
+        is SoapResult.Success -> "OK"
+    }
+
+    /** 清单没建立时用曲库兜底，避免"上一首/下一首"点了没反应 */    private fun ensureQueueReady() {
         if (AppState.queue.value.isNotEmpty()) return
         val library = MusicLibrary.tracks.value
         if (library.isEmpty()) return
@@ -742,7 +958,14 @@ class SonosCastService : Service() {
         }
         AppState.setQueueTrack(track)
         MediaRegistry.registerTrack(track)
-        scope.launch { performCast(MediaRegistry.current.value ?: return@launch, targets) }
+        val index = AppState.queueIndex.value
+        scope.launch {
+            // 优先走"音箱原生队列"：机身按键、随机/循环、自动续播都交给音箱
+            if (castNativeQueue(targets, index)) return@launch
+            // 走不通（S1 / 清单只有一首 / 接口报错）→ 退回逐首推 URL
+            nativeQueueActive = false
+            performCast(MediaRegistry.current.value ?: return@launch, targets)
+        }
     }
 
     /** 随机开关：只改顺序，循环按钮随之亮/灭（互斥由 AppState 保证） */
@@ -886,6 +1109,7 @@ class SonosCastService : Service() {
     private fun setVolume(volume: Int) {
         val value = volume.coerceIn(0, 100)
         AppState.volume.value = value
+        lastVolumeSetAt = SystemClock.elapsedRealtime()
         scope.launch {
             val targets = AppState.controlTargets()
             val results = targets.map { device -> device to soap.setVolume(device, value) }
@@ -975,78 +1199,155 @@ class SonosCastService : Service() {
         progressJob = scope.launch {
             var tick = 0
             while (isActive) {
-                val playing = AppState.coordinators().firstOrNull { device ->
-                    AppState.deviceStatus.value[device.key] == DeviceStatus.PLAYING
+                // 正在播或**被机身按键暂停**的设备都算活跃：暂停后也要继续读状态，
+                // 否则机身再按一次播放，App 这边永远发现不了。
+                val active = AppState.coordinators().firstOrNull { device ->
+                    val status = AppState.deviceStatus.value[device.key]
+                    status == DeviceStatus.PLAYING || status == DeviceStatus.PAUSED
                 }
-                if (playing != null) {
+                if (active != null) {
                     val sampled = tick % PROGRESS_SAMPLE_EVERY_TICKS == 0
                     if (sampled) {
-                        runCatching { soap.getPositionInfo(playing) }.getOrNull()?.let { (position, duration) ->
+                        runCatching { soap.getPositionInfo(active) }.getOrNull()?.let { (position, duration) ->
                             AppState.positionSec.value = position
                             if (duration > 0L) AppState.durationSec.value = duration
                         }
-                    } else {
-                        // 两次采样之间的本地推进：只加秒数，不超过总时长
+                        // 机身按键切歌 / 暂停 / 继续，都只能靠轮询发现
+                        syncQueueTrack(active)
+                        syncTransportState(active)
+                        if (tick % (PROGRESS_SAMPLE_EVERY_TICKS * VOLUME_POLL_EVERY_SAMPLES) == 0) {
+                            syncVolume(active)
+                        }
+                    } else if (AppState.deviceStatus.value[active.key] == DeviceStatus.PLAYING) {
+                        // 两次采样之间的本地推进：**只在真的在播时**做。
+                        // 暂停时继续插值就会变成 1:27↔1:28 反复横跳（1.0.1 的现象）。
                         val next = AppState.positionSec.value + 1
                         val total = AppState.durationSec.value
                         if (total <= 0L || next < total) {
                             AppState.positionSec.value = next
                         }
                     }
-
-                    // 检测"一首放完"：状态从 PLAYING 掉到 STOPPED 就是它自己播完了
-                    val state = if (sampled) runCatching { soap.getTransportState(playing) }.getOrNull() else null
-                    if (state != null) {
-                        if (lastTransportState == "PLAYING" && state == "STOPPED") {
-                            // 计时器/闹钟刚切过歌时，音箱可能还在报上一首的 STOPPED。
-                            // 这里做一次静默期，避免"连跳两首"。
-                            val sinceAdvance = SystemClock.elapsedRealtime() - lastAdvanceAt
-                            if (sinceAdvance < AUTO_ADVANCE_DEBOUNCE_MS) {
-                                LogBus.d("刚切过歌（${sinceAdvance}ms），忽略这次 STOPPED")
-                            } else {
-                                // 再核一道：停止来得远早于这一首的时长 → 多半是网络抖动/音箱自己停了，
-                                // 不能当成"放完了"，否则会把没放完的歌切掉（1.0 的真 bug）。
-                                val playedMs = if (castAtMs > 0L) {
-                                    SystemClock.elapsedRealtime() - castAtMs
-                                } else {
-                                    Long.MAX_VALUE
-                                }
-                                val expectedMs = if (castDurationMs > 0L) {
-                                    castDurationMs
-                                } else {
-                                    AppState.durationSec.value * 1000L
-                                }
-                                val tooEarly = expectedMs > 0L && playedMs < expectedMs - EARLY_STOP_TOLERANCE_MS
-
-                                if (tooEarly && earlyStopRetries < MAX_EARLY_STOP_RETRIES) {
-                                    earlyStopRetries++
-                                    LogBus.w(
-                                        "音箱提前停止（已播 ${playedMs / 1000}s / 共 ${expectedMs / 1000}s），" +
-                                            "尝试继续播放而不是跳歌（第 $earlyStopRetries 次）"
-                                    )
-                                    runCatching { soap.play(playing) }
-                                } else {
-                                    LogBus.i("播放结束 → 按「${playModeLabel()}」续播")
-                                    playRelative(1, auto = true)
-                                }
-                            }
-                        }
-                        if (state != lastTransportState) {
-                            updatePlaybackState(
-                                when (state) {
-                                    "PLAYING" -> PlaybackStateCompat.STATE_PLAYING
-                                    "PAUSED_PLAYBACK" -> PlaybackStateCompat.STATE_PAUSED
-                                    "STOPPED" -> PlaybackStateCompat.STATE_STOPPED
-                                    else -> PlaybackStateCompat.STATE_NONE
-                                }
-                            )
-                        }
-                        lastTransportState = state
-                    }
                 }
                 tick++
                 delay(PROGRESS_TICK_MS)
             }
+        }
+    }
+
+    // ------------------------------------------------------ 外部控制的同步
+
+    /**
+     * 把音箱的真实状态同步回 App。
+     *
+     * 机身按键（播放/暂停）和 Sonos 官方 App 都不会通知我们，只能靠轮询发现。
+     * 早期版本只更新了 MediaSession、没更新 `AppState.deviceStatus`，
+     * 于是"音箱暂停了，手机上的按钮还是播放态、进度条还在 1:27↔1:28 插值"。
+     */
+    private suspend fun syncTransportState(device: SonosDevice) {
+        val state = runCatching { soap.getTransportState(device) }.getOrNull() ?: return
+        val current = AppState.deviceStatus.value[device.key]
+
+        when (state) {
+            "PAUSED_PLAYBACK" -> {
+                if (current != DeviceStatus.PAUSED) {
+                    LogBus.i("音箱已暂停（机身按键 / Sonos App），同步界面状态")
+                    AppState.setStatus(device.key, DeviceStatus.PAUSED)
+                    cancelAutoAdvance()
+                    updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                    updateNotification()
+                }
+                lastTransportState = state
+            }
+
+            "PLAYING" -> {
+                if (current != DeviceStatus.PLAYING) {
+                    LogBus.i("音箱已开始播放，同步界面状态")
+                    AppState.setStatus(device.key, DeviceStatus.PLAYING)
+                    updatePlaybackState(PlaybackStateCompat.STATE_PLAYING)
+                    updateNotification()
+                }
+                lastTransportState = state
+            }
+
+            "STOPPED" -> {
+                if (lastTransportState == "PLAYING") {
+                    if (nativeQueueActive) {
+                        // 队列模式：切歌是音箱自己做的，出现 STOPPED 说明队列真的放完了
+                        LogBus.i("音箱队列播放结束")
+                        AppState.setStatus(device.key, DeviceStatus.IDLE)
+                        updatePlaybackState(PlaybackStateCompat.STATE_STOPPED)
+                        updateNotification()
+                    } else {
+                        handleEarlyStop(device)
+                    }
+                }
+                lastTransportState = state
+            }
+
+            else -> lastTransportState = state
+        }
+    }
+
+    /** 单曲推送模式下的 STOPPED 判定：区分"真的放完"与"抖动提前停止" */
+    private fun handleEarlyStop(device: SonosDevice) {
+        val sinceAdvance = SystemClock.elapsedRealtime() - lastAdvanceAt
+        if (sinceAdvance < AUTO_ADVANCE_DEBOUNCE_MS) {
+            LogBus.d("刚切过歌（${sinceAdvance}ms），忽略这次 STOPPED")
+            return
+        }
+        val playedMs = if (castAtMs > 0L) {
+            SystemClock.elapsedRealtime() - castAtMs
+        } else {
+            Long.MAX_VALUE
+        }
+        val expectedMs = if (castDurationMs > 0L) castDurationMs else AppState.durationSec.value * 1000L
+        val tooEarly = expectedMs > 0L && playedMs < expectedMs - EARLY_STOP_TOLERANCE_MS
+
+        if (tooEarly && earlyStopRetries < MAX_EARLY_STOP_RETRIES) {
+            earlyStopRetries++
+            LogBus.w(
+                "音箱提前停止（已播 ${playedMs / 1000}s / 共 ${expectedMs / 1000}s），" +
+                    "尝试继续播放而不是跳歌（第 $earlyStopRetries 次）"
+            )
+            scope.launch { runCatching { soap.play(device) } }
+        } else {
+            LogBus.i("播放结束 → 按「${playModeLabel()}」续播")
+            playRelative(1, auto = true)
+        }
+    }
+
+    /**
+     * 跟随音箱队列的当前序号。
+     *
+     * 机身的"下一首"（双击播放键）按下后是**音箱自己**换了曲，我们收不到任何通知，
+     * 只能靠 GetPositionInfo 里的 `<Track>` 变化发现，再回头更新界面与通知。
+     */
+    private suspend fun syncQueueTrack(device: SonosDevice) {
+        if (!nativeQueueActive) return
+        val trackNo = runCatching { soap.getQueueTrackNumber(device) }.getOrNull() ?: return
+        if (trackNo <= 0 || trackNo == lastQueueTrack) return
+
+        lastQueueTrack = trackNo
+        val index = trackNo - 1
+        val track = AppState.queue.value.getOrNull(index) ?: return
+        LogBus.i("音箱切到了队列第 $trackNo 首 →「${track.title}」")
+        AppState.queueIndex.value = index
+        MediaRegistry.registerTrack(track)
+        AppState.positionSec.value = 0L
+        castAtMs = SystemClock.elapsedRealtime()
+        castDurationMs = track.durationMs
+        updatePlaybackState(PlaybackStateCompat.STATE_PLAYING)
+        updateNotification()
+    }
+
+    /** 音量回读：机身音量键 / Sonos App 调过之后，App 里的滑块要跟着动 */
+    private suspend fun syncVolume(device: SonosDevice) {
+        // 刚由 App 自己设过音量时先别读，避免和用户拖动打架
+        if (SystemClock.elapsedRealtime() - lastVolumeSetAt < VOLUME_SYNC_GUARD_MS) return
+        val volume = runCatching { soap.getVolume(device) }.getOrNull() ?: return
+        if (volume != AppState.volume.value) {
+            LogBus.d("音量已同步：$volume（来自音箱机身或 Sonos App）")
+            AppState.volume.value = volume
         }
     }
 
@@ -1402,6 +1703,15 @@ class SonosCastService : Service() {
 
         /** 提前停止最多尝试续播几次，超过就认命切歌 */
         private const val MAX_EARLY_STOP_RETRIES = 2
+
+        /** 每多少轮采样读一次音量（4 = 约 8 秒一次） */
+        private const val VOLUME_POLL_EVERY_SAMPLES = 4
+
+        /** 刚由 App 设过音量后，这段时间内不接受回读 */
+        private const val VOLUME_SYNC_GUARD_MS = 3_000L
+
+        /** 灌队列时每次塞多少首（实测音箱上限 16，18 就 402/500，取 12 留余量） */
+        private const val QUEUE_CHUNK_SIZE = 12
 
         /** 每 N 拍真正向音箱采样一次（当前 = 每 2 秒一次 SOAP，其余用本地插值） */
         private const val PROGRESS_SAMPLE_EVERY_TICKS = 2

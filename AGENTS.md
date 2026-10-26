@@ -16,7 +16,7 @@ App(NanoHTTPD :8080) ──SetAVTransportURI(URL)──► Sonos :1400 /AVTransp
         └────────── GET /stream/<fileId>（Range）───────┘
 ```
 
-包名 `com.sonoscast.local`，当前 **1.0 (versionCode 27)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ LOCAL STREAM，minSdk 26 / targetSdk 35。
+包名 `com.sonoscast.local`，当前 **1.0.2 (versionCode 33)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ LOCAL STREAM，minSdk 26 / targetSdk 35。
 
 ---
 
@@ -69,7 +69,7 @@ cd "C:\Users\C\Desktop\AI\SONOS本地播放apk开发\SonosLocalCast"
 ```powershell
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 & $adb devices                                     # 手机需先开「USB 调试」或用无线调试配对
-& $adb install -r "dist\ZONOZ-LOCAL-STREAM-v1.0.apk"
+& $adb install -r "dist\ZONOZ-LOCAL-STREAM-v1.0.2.apk"
 & $adb logcat -s SonosCast                          # App 的日志 TAG 就是 SonosCast
 
 # 截图：adb pull 直接落到含中文的工作区路径会失败，先拉到 TEMP 再拷进来
@@ -599,6 +599,152 @@ if (!batteryExempt || !exactAlarmAllowed) { ...引导与按钮... }
 `release/` 下分四份（工作区内的副本，最终拷到桌面）：
 
 1. `1-源码（上传到 GitHub）` —— 78 个文件 / 0.6 MB，可直接作为仓库根内容
-2. `2-APK（传到 Releases）` —— `ZONOZ-LOCAL-STREAM-v1.0.apk`（1.51 MB）+ `sha256.txt`
+2. `2-APK（传到 Releases）` —— `ZONOZ-LOCAL-STREAM-v1.0.2.apk`（1.51 MB）+ `sha256.txt`
 3. `3-上传教程.md` —— 保姆级 GitHub 上传步骤
 4. `4-签名密钥（自行保管）` —— keystore 备份 + 说明，**绝不能上传**
+
+## 18. 1.0.1 修掉的三个真 bug
+
+### 18.1 「下一首播放」永远没反应
+
+```
+旧：if (list.any { it.id == track.id }) return false   // 已在清单就放弃
+```
+
+从曲库点歌时清单就是整个曲库，所以**每一首**都在清单里 → 这个菜单项等于摆设。
+
+新逻辑（`AppState.insertNext`）：把目标曲从原位置**摘掉**，再插到 `queueIndex + 1`。
+只有两种情况不动作：它正在播、或者它本来就在下一位。
+
+### 18.2 A-Z 索引对中文无效
+
+旧的 `sectionIndex` 取标题首字符判断 `A..Z`，汉字的码位在拉丁字母之后 → 全落 `#`，
+排序又是 `String.CASE_INSENSITIVE_ORDER`（按 UTF-16 码位），于是中文全堆在 Z 之后。
+
+新做法（不引入字典、不依赖 ICU）：
+- **首字母**：把字转成 GBK 字节，利用 **GB2312 一级汉字区（0xB0A1–0xD7F9）按拼音编码**这一特性，
+  用一张 23 个边界码表反推首字母（拼音无 I/U/V）。
+- **排序**：`compareBy(letterRank(indexLetter(title)))` + `thenComparator { Collator(CHINA) }`，
+  保证"列表顺序"和"索引条跳转"一致。
+- 实测：`奔跑→B`、`大城小爱→D`、`故乡→G`、`花田错→H`；
+  曲库加载时会把分组结果打进日志（`A-Z 分组：ABC…`），方便以后排查。
+
+### 18.3 歌没放完就跳下一首（最严重）
+
+两个原因叠加：
+
+1. **排续播用错了时长**。推送成功后立刻 `scheduleAutoAdvance()`，那一刻
+   `AppState.durationSec` 还是**上一首**的值（要等 2s 轮询才刷新），
+   于是"还剩多久"按上一首算，定时器提前触发。
+2. **音箱提前停止被当成播完**。网络抖动/音箱自己停 → `PLAYING → STOPPED`，
+   旧逻辑无条件切歌。
+
+三层修法：
+
+| 层 | 内容 |
+| --- | --- |
+| ① 时长来源 | 优先 `Track.durationMs`（曲目元数据），全局轮询值只作兜底 |
+| ② 到点核实 | `verifyThenAdvance()`：定时器触发后先问一次真实进度，没到结尾就按真实剩余重排 |
+| ③ 提前停止 | `castAtMs` / `castDurationMs` 记下"何时推的、多长"，STOPPED 时差 20s 以上判为异常 → 先 `Play` 续上（最多 2 次），不切歌 |
+
+日志里对应 `续播计时器提前到点（…）` 与 `音箱提前停止（已播 …s / 共 …s）`。
+
+## 19. 1.0.2 修掉的三个"外部控制不同步"
+
+### 19.1 机身按键暂停，App 不跟着变（进度 1:27↔1:28 抖动）
+
+轮询一直在跑，但只更新了 MediaSession，**没更新 AppState.deviceStatus**：
+- 播放按钮仍按 PLAYING 渲染；
+- 2s 采样把秒数拉回 1:27，本地插值又推到 1:28 → 横跳。
+
+修法：新增 `syncTransportState()`，把 PLAYING / PAUSED_PLAYBACK 双向同步回 AppState，
+暂停时 `cancelAutoAdvance()`；本地插值只在"确实在播"时做（判断依据也换成状态而非设备发现）。
+
+### 19.2 机身音量键，App 滑块不动
+
+音量一直是只写不读。新增 `syncVolume()`，每约 8 秒读一次 `RenderingControl.GetVolume`；
+App 自己刚设过音量的 3 秒内跳过（`VOLUME_SYNC_GUARD_MS`），避免和拖动打架。
+
+### 19.3 机身"下一首"失效 → 改用 Sonos 原生队列
+
+根因是架构：只推单条 URI 时音箱**没有队列**，机身按键无处可切。
+
+`SonosSoapClient` 新增：`removeAllTracksFromQueue` / `addMultipleUrisToQueue` /
+`setQueueTransport` / `setPlayMode` / `seekToTrack` / `nextTrack` / `previousTrack` /
+`getQueueTrackNumber`。
+
+`SonosCastService.castNativeQueue()`：
+RemoveAll → AddMultiple（每批 12，失败对半拆）→ SetAVTransportURI(x-rincon-queue:UUID#0) →
+SetPlayMode → Seek(TRACK_NR) → Play。
+
+- 机身按键切歌靠 `GetPositionInfo` 的 `<Track>` 变化发现（`syncQueueTrack()`）
+- `playRelative` 在队列模式下改发 Next/Previous
+- 队列模式**关掉本地续播计时器**，由音箱自己续播（也就根除了"提前切歌"那一类问题）
+- 单首清单 / S1 / 任何 SOAP 失败 → 自动退回逐首推 URL
+
+真机验证脚本：`deploy/queue_probe.py`（push 队列 / next / pause / volume / status）。
+### 19.4 1.0.3：双击播放键仍无效的原因（漏改第二条入口）
+
+App 有**两条**播放入口：
+
+| 入口 | 触发场景 | 1.0.2 状态 |
+| --- | --- | --- |
+| `startTrack()` | 上一首 / 下一首 / 自动续播 | 已走原生队列 |
+| `castCurrent()` | **曲库点歌 / 清单点歌 / 通知栏播放** | 仍是单曲推送 ← 漏了 |
+
+平时点歌走的正是 `castCurrent()`，所以音箱一直没有队列。
+Sonos 文档对双击播放键的措辞是 "press twice to skip a track (when applicable)" ——
+没有队列时就是 not applicable，表现就是"只会播放/暂停"。
+
+修法：`castCurrent()` 同样先 `castNativeQueue()`，失败再 `performCast()`；
+四个降级分支（清单 < 2 首 / IP 未知 / 端口未就绪 / 无可用主箱）都补了日志。
+### 19.5 1.0.4：入队一次 24 首超限（音箱橙灯连闪的真正原因）
+
+1.0.3 修好入口后，入队这一步自己失败了：`UPnP 402`。
+
+真机实测的 `AddMultipleURIsToQueue` 上限（Play:1 / S2 86.10）：
+
+| 数量 | 结果 |
+| --- | --- |
+| 8 / 12 / 16 | 200 |
+| 18 / 20 / 22 / 24 | 402 / 500 |
+
+修法：`QUEUE_CHUNK_SIZE` 24 → **12**，并加 `enqueueChunk()` 对半拆分重试（拆到单条为止）。
+
+另外把「队列确实建成」的判据记下来，便于以后自检：
+`GetMediaInfo` 返回 `NrTracks=N` 且 `CurrentURI=x-rincon-queue:RINCON_…#0`。
+
+> 机身橙灯连闪 = 音箱收到了 Next 但执行失败（没有队列 / 曲目打不开），不是 App 崩了。
+### 19.6 1.0.5：分批入队把顺序搞反 →「点 A 播 B」
+
+1.0.4 把清单切成 12 首一批，但每批的 `DesiredFirstTrackNumberEnqueued` 都写死 **1**。
+音箱的语义是"把这一批插到第 N 位"，于是后面每一批都顶到队首，队列变成按批倒序：
+
+真机实测（不同 URL 入队后用 ContentDirectory.Browse 读回）：
+
+| 写法 | 实际顺序 |
+| --- | --- |
+| 每批都插第 1 位 | probe05 → probe06 → probe03 → probe04 → probe01 → probe02 |
+| 逐批递增 | probe01 → … → probe06（正确）|
+
+而 seek 用的是 `AppState.queueIndex + 1`，序号和实际位置不符 → 播错歌。
+
+修法：
+1. `enqueueAll` 传 `index + 1` 作为本批插入位置；
+2. 拆分重试时右半批用 `firstTrackNumber + mid`；
+3. 两道自检：入队后比对 `NrTracks` 与清单长度；定位后比对 `<Track>` 与期望序号，
+   任一不符就**退回逐首推送**（永不播错）。
+
+> 教训：凡是"分批写入有序资源"的 API，插入位置必须显式递增，
+> 且写入后一定要**读回来校验**。
+
+### 19.7 版本号合并（对外统一 1.0.2）
+
+按用户要求：**1.0.1 之后的所有迭代（1.0.2 / 1.0.3 / 1.0.4 / 1.0.5）合并成一次发布 1.0.2**。
+
+- 对外 versionName = 1.0.2
+- 内部 versionCode = 33，保持单调递增（已装的是 32），否则老用户无法覆盖安装
+- 代码内容 = 1.0.5 的全部修复（原生队列 + 分批入队 + 顺序修正 + 双自检 + 状态/音量同步）
+- release/更新日志.md 与仓库 CHANGELOG.md 改为中英双语，并把 1.0.2–1.0.5 的条目合并叙述
+
+> 以后发版：只改 versionName（1.0.3 …），versionCode 继续 +1。

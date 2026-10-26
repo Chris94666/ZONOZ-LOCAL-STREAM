@@ -111,9 +111,116 @@ class SonosSoapClient {
             )
         )
 
+    // ------------------------------------------------------- 原生队列（1.0.2）
+    //
+    // 为什么要有这一组：只推单条 URI（SetAVTransportURI）时，音箱自己**没有队列**，
+    // 机身上的"下一首"（双击播放键）无处可去；同时也轮不到音箱自己续播。
+    // 把整条播放清单塞进音箱队列后：机身的上一首/下一首、随机/循环全由音箱执行，
+    // 手机只负责观察。这才是 Sonos 的正常用法。
+
+    /** 清空音箱队列 */
+    suspend fun removeAllTracksFromQueue(device: SonosDevice): SoapResult =
+        avTransport(device, "RemoveAllTracksFromQueue", listOf("InstanceID" to "0"))
+
+    /**
+     * 一次把多首塞进音箱队列。
+     * [entries] 是 (url, DIDL-Lite 元数据) 的列表，两者都用空格连接后作为参数。
+     * [firstTrackNumber] 这一批的第一首应排在队列第几位（1 起）——
+     *   分批入队时必须逐批递增，否则每批都会挤到队首，顺序被打乱。
+     */
+    suspend fun addMultipleUrisToQueue(
+        device: SonosDevice,
+        entries: List<Pair<String, String>>,
+        firstTrackNumber: Int = 1
+    ): SoapResult {
+        if (entries.isEmpty()) return SoapResult.Success("")
+        return avTransport(
+            device,
+            "AddMultipleURIsToQueue",
+            listOf(
+                "InstanceID" to "0",
+                "UpdateID" to "0",
+                "NumberOfURIs" to entries.size.toString(),
+                "EnqueuedURIs" to entries.joinToString(" ") { it.first },
+                "EnqueuedURIsMetaData" to entries.joinToString(" ") { it.second },
+                "ContainerURI" to "",
+                "ContainerMetaData" to "",
+                "DesiredFirstTrackNumberEnqueued" to firstTrackNumber.coerceAtLeast(1).toString(),
+                "EnqueueAsNext" to "0"
+            )
+        )
+    }
+
+    /** 让传输层指向"音箱自己的队列" */
+    suspend fun setQueueTransport(device: SonosDevice): SoapResult {
+        val queueUri = "x-rincon-queue:${device.uuid}#0"
+        val meta = buildString {
+            append("<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" ")
+            append("xmlns:dc=\"http://purl.org/dc/elements/1.1/\" ")
+            append("xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">")
+            append("<item id=\"-1\" parentID=\"-1\" restricted=\"1\">")
+            append("<upnp:class>object.container.playlistContainer</upnp:class>")
+            append("<desc id=\"cdudn\" nameSpace=\"urn:schemas-rinconnet:1/service/DeviceProperties\">")
+            append(SoapXml.escape(queueUri))
+            append("</desc></item></DIDL-Lite>")
+        }
+        LogBus.tx("SetAVTransportURI → ${device.displayName} CurrentURI=$queueUri（原生队列）")
+        return setAvTransportUri(device, queueUri, meta)
+    }
+
+    /** NORMAL / REPEAT_ALL / REPEAT_ONE / SHUFFLE / SHUFFLE_NOREPEAT */
+    suspend fun setPlayMode(device: SonosDevice, mode: String): SoapResult =
+        avTransport(
+            device,
+            "SetPlayMode",
+            listOf("InstanceID" to "0", "NewPlayMode" to mode)
+        )
+
+    /** 跳到队列里的第 [trackNumber] 首（1 起） */
+    suspend fun seekToTrack(device: SonosDevice, trackNumber: Int): SoapResult =
+        avTransport(
+            device,
+            "Seek",
+            listOf(
+                "InstanceID" to "0",
+                "Unit" to "TRACK_NR",
+                "Target" to trackNumber.coerceAtLeast(1).toString()
+            )
+        )
+
+    suspend fun nextTrack(device: SonosDevice): SoapResult =
+        avTransport(device, "Next", listOf("InstanceID" to "0"))
+
+    suspend fun previousTrack(device: SonosDevice): SoapResult =
+        avTransport(device, "Previous", listOf("InstanceID" to "0"))
+
+    /**
+     * 音箱队列里当前播到第几首（1 起）。
+     *
+     * 机身上的"下一首"按下后不会通知我们，只能靠这个值变化来发现 ——
+     * 这也是 UI 能跟着更新的依据。
+     */
+    suspend fun getQueueTrackNumber(device: SonosDevice): Int? {
+        val result = avTransport(device, "GetPositionInfo", listOf("InstanceID" to "0"))
+        return if (result is SoapResult.Success) {
+            QUEUE_TRACK.find(result.body)?.groupValues?.get(1)?.trim()?.toIntOrNull()
+        } else {
+            null
+        }
+    }
+
+    /** 音箱队列里一共有几首（GetMediaInfo 的 NrTracks） */
+    suspend fun getQueueSize(device: SonosDevice): Int? {
+        val result = avTransport(device, "GetMediaInfo", listOf("InstanceID" to "0"))
+        return if (result is SoapResult.Success) {
+            QUEUE_TRACKS.find(result.body)?.groupValues?.get(1)?.trim()?.toIntOrNull()
+        } else {
+            null
+        }
+    }
+
     /** 返回 PLAYING / PAUSED_PLAYBACK / STOPPED / TRANSITIONING 等 */
-    suspend fun getTransportState(device: SonosDevice): String? {
-        val result = avTransport(device, "GetTransportInfo", listOf("InstanceID" to "0"))
+    suspend fun getTransportState(device: SonosDevice): String? {        val result = avTransport(device, "GetTransportInfo", listOf("InstanceID" to "0"))
         return if (result is SoapResult.Success) {
             TRANSPORT_STATE.find(result.body)?.groupValues?.get(1)
         } else {
@@ -315,6 +422,12 @@ class SonosSoapClient {
         private val ERROR_CODE = Regex("<errorCode>\\s*(-?\\d+)\\s*</errorCode>")
         private val ERROR_DESCRIPTION = Regex("<errorDescription>([^<]*)</errorDescription>")
         private val TRANSPORT_STATE = Regex("<CurrentTransportState>([^<]*)</CurrentTransportState>")
+
+    /** GetPositionInfo 里的 <Track>：队列中第几首 */
+    private val QUEUE_TRACK = Regex("<Track>(\\d+)</Track>")
+
+    /** GetMediaInfo 里的 <NrTracks>：队列总长 */
+    private val QUEUE_TRACKS = Regex("<NrTracks>(\\d+)</NrTracks>")
         private val CURRENT_VOLUME = Regex("<CurrentVolume>\\s*(\\d+)\\s*</CurrentVolume>")
         private val POSITION = Regex("<RelTime>([^<]*)</RelTime>")
         private val TRACK_DURATION = Regex("<TrackDuration>([^<]*)</TrackDuration>")

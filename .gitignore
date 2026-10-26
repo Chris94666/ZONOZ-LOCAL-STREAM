@@ -1,0 +1,34 @@
+# ---------- Gradle / Android 构建产物 ----------
+.gradle/
+.kotlin/
+build/
+*/build/
+local.properties
+
+# 本机 Gradle 缓存镜像（体积很大，绝不入库）
+.gradle-home/
+
+# ---------- 签名材料（绝不要提交） ----------
+*.jks
+*.keystore
+keystore/
+
+# ---------- IDE ----------
+.idea/
+*.iml
+.DS_Store
+captures/
+
+# ---------- 本项目自用目录 ----------
+# 打包好的 APK（走 GitHub Releases 分发，不进仓库）
+dist/
+*.apk
+*.aab
+
+# 开发过程中的截图 / 录屏 / 日志 / 一次性脚本
+deploy/
+.cache/
+*.log
+
+# 会话工作记录（含个人设备信息）
+.workbuddy/
