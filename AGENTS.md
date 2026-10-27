@@ -44,7 +44,7 @@ cd "C:\Users\C\Desktop\AI\SONOS本地播放apk开发\SonosLocalCast"
 ```
 
 产物：`SonosLocalCast/app/build/outputs/apk/release/app-release.apk`
-（自签名 `keystore/sonoscast.jks`，alias / storepass / keypass 均为 `sonoscast`）
+  （自签名 keystore；口令走 `local.properties` / 环境变量，不入库）
 
 `assembleDebug` 同样可用（debug 也复用该 keystore）。
 
