@@ -296,7 +296,7 @@ private fun PlayerTopBar(
             .height(56.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 标题用 AnnotatedString 拼：LOCAL STREAM 的字号是 ZONOZ 的 2/3，
+        // 标题用 AnnotatedString 拼：local stream 的字号是 ZONOZ 的 2/3，
         // 同一段文本才能保证基线自然对齐。
         Text(
             text = buildAnnotatedString {
@@ -304,8 +304,8 @@ private fun PlayerTopBar(
                     append("ZONOZ")
                 }
                 append("  ")
-                withStyle(SpanStyle(fontSize = 11.3.sp, fontWeight = FontWeight.Medium, letterSpacing = 1.4.sp)) {
-                    append("LOCAL STREAM")
+                withStyle(SpanStyle(fontSize = 11.3.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.4.sp)) {
+                    append("local stream")
                 }
             },
             color = MaterialTheme.colorScheme.onBackground,

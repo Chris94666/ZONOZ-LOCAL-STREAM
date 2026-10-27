@@ -71,7 +71,7 @@ git -c http.sslBackend=openssl -c "http.extraheader=$hdr" push origin main
 git -c http.sslBackend=openssl -c "http.extraheader=$hdr" push origin vX.Y.Z
 ```
 
-**不要**把整个开发仓库推上去：它的历史里有 `SonosLocalCast/keystore/sonoscast.jks`。
+**不要**把整个开发仓库推上去：它的历史里有签名密钥文件。
 公开内容只用 `release/1-源码（上传到 GitHub）/` 这一棵干净树。
 
 推送后必须回读确认：

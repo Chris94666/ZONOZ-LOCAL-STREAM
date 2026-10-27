@@ -181,6 +181,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
         if (AppState.insertNext(track)) {
             LogBus.i("已排到下一首：《${track.title}》")
+            // 只改 App 的清单不够：音箱里那份队列也得跟上，否则两边顺序错开，
+            // 放完当前曲后"声音"和"界面"会永久差一位（1.1.1 的真 bug）。
+            // 移动已有曲目时音箱里还留着旧副本，只能重建；新曲目可以原生插队。
+            SonosCastService.queueChanged(app, track.id, AppState.lastInsertWasMove)
         } else {
             LogBus.d("《${track.title}》已在播放清单里")
         }

@@ -1,4 +1,4 @@
-# ZONOZ LOCAL STREAM
+# ZONOZ local stream
 
 Stream the music stored on your phone straight to Sonos speakers on your local network —
 no cloud, no account, no Sonos app required.
@@ -31,7 +31,7 @@ no cloud, no account, no Sonos app required.
 
 ### What it is
 
-ZONOZ LOCAL STREAM turns your Android phone into a media server for your Sonos speakers.
+ZONOZ local stream turns your Android phone into a media server for your Sonos speakers.
 The app scans the music stored on the phone, serves it over an embedded HTTP server with full
 `Range` support (so seeking works), and drives the speaker over UPnP/SOAP — playlist, play/pause,
 volume, repeat and shuffle all happen on the speaker itself.

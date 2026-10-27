@@ -64,7 +64,7 @@ class LocalMediaServer(
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width,initial-scale=1">
-              <title>ZONOZ LOCAL STREAM · 本地媒体服务</title>
+              <title>ZONOZ local stream · 本地媒体服务</title>
               <style>
                 :root { color-scheme: light dark; }
                 body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -79,7 +79,7 @@ class LocalMediaServer(
               </style>
             </head>
             <body>
-              <h1>ZONOZ LOCAL STREAM · 本地媒体服务</h1>
+              <h1>ZONOZ local stream · 本地媒体服务</h1>
               <div class="sub">如果你能在另一台设备上打开这个页面，说明手机到局域网的入站连接是通的。</div>
               <div class="card">
                 <div class="k">服务地址</div>
@@ -107,9 +107,20 @@ class LocalMediaServer(
 
     private fun handleStream(session: IHTTPSession, uri: String): Response {
         val fileId = extractFileId(uri, session)
-        val item = fileId?.let { MediaRegistry.get(it) }
         val remote = session.remoteIpAddress ?: "?"
         val rangeHeader = session.headers["range"]
+
+        // 先在内存注册表里找；找不到就从曲库反推（fileId = md5(uri)，可复算）。
+        // 为什么需要这一步：进程重启后内存注册表是空的，而音箱队列里还留着上一次的 URL。
+        // 不补这层的话，音箱播到下一首时会拿到 404，于是跳过该曲、直接放下一首 ——
+        // 听感就是"音乐自己跳了 / 与界面不一致"（1.1.3 定位到的真因）。
+        val item = if (fileId != null) {
+            MediaRegistry.get(fileId) ?: runCatching {
+                kotlinx.coroutines.runBlocking { MediaRegistry.resolve(context, fileId) }
+            }.getOrNull()
+        } else {
+            null
+        }
 
         if (item == null) {
             LogBus.w("HTTP 404 · $remote ${session.method} $uri（未知 fileId）")
@@ -119,6 +130,7 @@ class LocalMediaServer(
                 "unknown fileId"
             )
         }
+        LogBus.d("按 fileId 解析到「${item.displayName}」（$fileId）")
 
         val total = item.sizeBytes
         val isHead = session.method == Method.HEAD

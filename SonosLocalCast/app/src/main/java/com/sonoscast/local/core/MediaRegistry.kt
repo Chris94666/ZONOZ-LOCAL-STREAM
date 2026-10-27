@@ -53,6 +53,14 @@ object MediaRegistry {
 
     fun get(fileId: String): MediaItem? = items[fileId]
 
+    /**
+     * 纯函数：算出某个 Uri 的 fileId，不注册、不改任何状态。
+     *
+     * 用途：从音箱回读的 `TrackURI` 反查"正在放的到底是哪一首" ——
+     * 按序号映射会在清单与音箱队列错位时永久偏一位（1.1.1 的真实 bug）。
+     */
+    fun fileIdFor(uri: Uri): String = newFileId(uri)
+
     fun setCurrent(item: MediaItem?) {
         _current.value = item
     }
@@ -86,6 +94,21 @@ object MediaRegistry {
         )
         items[fileId] = item
         if (makeCurrent) _current.value = item
+        return item
+    }
+
+    /**
+     * 按 fileId 找回可播放的条目（先内存，再回曲库反推）。
+     *
+     * fileId 是 `md5(uri)` 前 12 位，可复算但**不可逆**。进程重启后内存表是空的，
+     * 而音箱队列里还留着上一次推送的 URL —— 这时必须能从曲库反推出来，
+     * 否则音箱会拿到 404 并跳过该曲（听感就是"音乐自己跳了 / 与界面不一致"）。
+     */
+    suspend fun resolve(context: Context, fileId: String): MediaItem? {
+        get(fileId)?.let { return it }
+        val hit = MusicLibrary.tracks.value.firstOrNull { fileIdFor(it.uri) == fileId } ?: return null
+        val item = registerTrackSilently(hit)
+        LogBus.i("按 fileId 从曲库找回：${hit.title}（$fileId）")
         return item
     }
 

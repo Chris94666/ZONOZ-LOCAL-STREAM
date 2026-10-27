@@ -131,7 +131,8 @@ class SonosSoapClient {
     suspend fun addMultipleUrisToQueue(
         device: SonosDevice,
         entries: List<Pair<String, String>>,
-        firstTrackNumber: Int = 1
+        firstTrackNumber: Int = 1,
+        enqueueAsNext: Boolean = false
     ): SoapResult {
         if (entries.isEmpty()) return SoapResult.Success("")
         return avTransport(
@@ -146,7 +147,7 @@ class SonosSoapClient {
                 "ContainerURI" to "",
                 "ContainerMetaData" to "",
                 "DesiredFirstTrackNumberEnqueued" to firstTrackNumber.coerceAtLeast(1).toString(),
-                "EnqueueAsNext" to "0"
+                "EnqueueAsNext" to if (enqueueAsNext) "1" else "0"
             )
         )
     }

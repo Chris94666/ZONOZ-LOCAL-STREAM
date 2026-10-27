@@ -1,9 +1,9 @@
 ---
 name: zonoz-local-stream
-description: Iterate the ZONOZ LOCAL STREAM Android app (Sonos local streaming, package com.sonoscast.local). Use for any change, build, device test, release, or protocol work on this project.
+description: Iterate the ZONOZ local stream Android app (Sonos local streaming, package com.sonoscast.local). Use for any change, build, device test, release, or protocol work on this project.
 ---
 
-# ZONOZ LOCAL STREAM · 迭代手册
+# ZONOZ local stream · 迭代手册
 
 把手机本地音乐通过 App 内嵌 HTTP 服务 + UPnP/SOAP 推给 Sonos 的 Android 应用。
 本 skill 是本项目 1.0.x 全过程的经验沉淀：**先读这一页，再按需读 references/**。

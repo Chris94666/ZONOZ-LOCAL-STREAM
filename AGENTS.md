@@ -1,4 +1,4 @@
-# ZONOZ LOCAL STREAM · 开发交接说明（先读这个）
+# ZONOZ local stream · 开发交接说明（先读这个）
 
 工程本体在 `SonosLocalCast/`。本文只写「怎么跑、怎么改、哪些坑已经踩过」，协议细节见
 `SonosLocalCast/README.md`，历史决策见 `.workbuddy/memory/`。
@@ -16,7 +16,7 @@ App(NanoHTTPD :8080) ──SetAVTransportURI(URL)──► Sonos :1400 /AVTransp
         └────────── GET /stream/<fileId>（Range）───────┘
 ```
 
-包名 `com.sonoscast.local`，当前 **1.1 (versionCode 42)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ LOCAL STREAM，minSdk 26 / targetSdk 35。
+包名 `com.sonoscast.local`，当前 **1.1.4 (versionCode 50)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ local stream，minSdk 26 / targetSdk 35。
 
 ---
 
@@ -69,7 +69,7 @@ cd "C:\Users\C\Desktop\AI\SONOS本地播放apk开发\SonosLocalCast"
 ```powershell
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 & $adb devices                                     # 手机需先开「USB 调试」或用无线调试配对
-& $adb install -r "dist\ZONOZ-LOCAL-STREAM-v1.1.apk"
+& $adb install -r "dist\ZONOZ-LOCAL-STREAM-v1.1.4.apk"
 & $adb logcat -s SonosCast                          # App 的日志 TAG 就是 SonosCast
 
 # 截图：adb pull 直接落到含中文的工作区路径会失败，先拉到 TEMP 再拷进来
@@ -88,7 +88,7 @@ Copy-Item "$env:TEMP\s1.png" "deploy\shots\p1.png"
 ## 6. 实测到的家庭环境
 
 - 手机：Redmi K80 Pro = `Redmi K80 Pro`（Android 16 / API 36），之前 IP `192.168.1.20`
-- 电脑：`192.168.1.10`
+- 电脑：`192.168.1.2`
 - 音箱：**客厅一对 Play:1 立体声配对**（S2，固件 86.10-81100）
   - `.4` = `RINCON_XXXXXXXXXXXXXXXXXX` = **主箱 / RF / Coordinator**
   - `.3` = `RINCON_YYYYYYYYYYYYYYYYYY` = **从箱 / LF / Invisible=1**
@@ -98,7 +98,7 @@ Copy-Item "$env:TEMP\s1.png" "deploy\shots\p1.png"
 
 ```powershell
 # 每台都应返回 200 + ZoneGroupState
-curl.exe -s -X POST "http://192.168.1.4:1400/ZoneGroupTopology/Control" `
+curl.exe -s -X POST "http://192.168.1.21:1400/ZoneGroupTopology/Control" `
   -H "SOAPACTION: \"urn:schemas-upnp-org:service:ZoneGroupTopology:1#GetZoneGroupState\"" `
   -H "Content-Type: text/xml; charset=utf-8" `
   --data-binary '<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetZoneGroupState xmlns:u="urn:schemas-upnp-org:service:ZoneGroupTopology:1"/></s:Body></s:Envelope>'
@@ -464,17 +464,17 @@ monochrome 叠加在专辑图右下角 —— 那个小字就是 `ic_stat_lc.png
 > 注意：曲目**没有内嵌封面**时，系统会拿 App 图标当占位图（白底 SONOS/LC），
 > 那是 `mipmap-*/ic_launcher.png`，与这里的 small icon 是两套资源。
 
-## 15. 品牌更名 ZONOZ LOCAL STREAM（2.0.0 / 2.0.1）
+## 15. 品牌更名 ZONOZ local stream（2.0.0 / 2.0.1）
 
 ### 15.1 改了什么
 
 | 位置 | 旧 | 新 |
 | --- | --- | --- |
-| 应用名 `strings.xml/app_name` | SONOS本地推播 | **ZONOZ LOCAL STREAM** |
+| 应用名 `strings.xml/app_name` | SONOS本地推播 | **ZONOZ local stream** |
 | 播放页顶栏 | SONOS + LOCAL CAST | ZONOZ + LOCAL STREAM |
-| 关于弹窗标题 | SONOS LOCAL CAST | ZONOZ LOCAL STREAM |
-| 通知/媒体会话兜底标题 | SONOS LOCAL CAST | ZONOZ LOCAL STREAM |
-| 诊断网页 `<title>/<h1>` | Sonos 本地媒体服务 | ZONOZ LOCAL STREAM · 本地媒体服务 |
+| 关于弹窗标题 | SONOS LOCAL CAST | ZONOZ local stream |
+| 通知/媒体会话兜底标题 | SONOS LOCAL CAST | ZONOZ local stream |
+| 诊断网页 `<title>/<h1>` | Sonos 本地媒体服务 | ZONOZ local stream · 本地媒体服务 |
 | 桌面图标 | 白底 SONOS + LC 两行 | 白底 **ZONOZ** 单行（`deploy/make_icons.py` 重写） |
 
 - 包名 `com.sonoscast.local` **没动** —— 改了会导致已装用户无法覆盖升级，且与品牌无关。
@@ -558,7 +558,7 @@ if (!batteryExempt || !exactAlarmAllowed) { ...引导与按钮... }
 
 - `versionName = "1.0"`、`versionCode = 27`（对外从 1.0 起算，versionCode 保持单调递增以便覆盖升级）
 - 作者改为 **大气放电现象**（8 语言 `Str.AUTHOR`）
-- 应用名 **ZONOZ LOCAL STREAM**，图标白底黑字 ZONOZ
+- 应用名 **ZONOZ local stream**，图标白底黑字 ZONOZ
 
 ### 17.2 仓库卫生（这几条是给所有公开仓库的模板）
 
@@ -870,3 +870,73 @@ python seek_probe.py                  # 证实 Seek(TRACK_NR) 语义
 - `recastIfQueueActive` 的四个提前返回都有日志
   （`当前不是队列模式` / `上一次推送还没结束` / `没有当前曲目` / `没有选中音箱`），
   便于区分"没触发"和"触发了但失败"。
+
+## 24. 1.1.3：把"界面与声音不一致"这一类问题结构性堵住
+
+这一节是本项目最容易反复的地方。**改播放链路前必读**，四条都是真机抓到的。
+
+### 24.1 `insertNext` 的下标必须跟着移动修正
+
+清单里被移动的歌如果排在**当前曲之前**，`removeAt` 会让当前曲前移一位：
+
+```kotlin
+if (existing >= 0) {
+    list.removeAt(existing)
+    if (existing < currentIdx) currentIdx--   // ← 漏了这句，queueIndex 会指向下一首
+}
+```
+
+漏掉它的后果：紧接着的重建按错误序号 seek → "点了下一首播放，音乐立刻跳成另一首"。
+
+### 24.2 进程重启后 fileId 必须能"反推"
+
+fileId = `md5(uri)[:12]`，可复算但**不可逆**。重启后内存注册表是空的，
+而音箱队列里还留着上一轮的 URL → 音箱取流拿到 **404 → 跳过整首**，
+听感就是"音乐自己跳了 / 和界面对不上"。
+
+现在 `handleStream` 找不到时调 `MediaRegistry.resolve(context, fileId)`：
+遍历曲库重算 `md5(uri)` 命中后补注册。实测：未注册 id → 200 + 正确长度；伪造 id → 404。
+
+### 24.3 队列模式下本地续播计时器必须彻底停用（三处闸门）
+
+架构上早就写了"队列模式由音箱自己续播"，但只写在注释里，代码没拦：
+
+| 位置 | 症状 |
+| --- | --- |
+| `scheduleAutoAdvance()`（拖进度条会调） | 重新武装计时器 |
+| `verifyThenAdvance()`（本地计时器到点） | 到点发 Next |
+| `handleAutoAdvance()`（闹钟唤醒） | 到点发 Next |
+
+实测事故：`奔跑` 播了 7 秒后计时器到点发 Next → 直接跳到 `Boléro`，
+用户感知是"放完 Amazing Day 直接到 Boléro"。
+
+**三处都必须 `if (nativeQueueActive) { cancel + return }`。**
+
+### 24.4 结构性措施（防止"漏一个入口"再次发生）
+
+| 措施 | 实现 | 目的 |
+| --- | --- | --- |
+| 单一写入口 | `AppState.updateQueue(next, reason)`，内部 `queueRevision++` | 杜绝绕过 |
+| 单一对账点 | 每 2s 采样比较 `queueRevision` 与 `syncedRevision`，差 >4s 就整队重建 | 漏了入口也能自愈 |
+| 按内容认歌 | `syncQueueTrack` 用 `TrackURI` 的 fileId 反查清单 | 序号错位也能显示正确 |
+| 主动自检 | 每约 10s 比对 `NrTracks` 与清单长度（60s 限流） | 提前发现漂移 |
+| 回归脚本 | `deploy/regress_queue.py`，七条路径 + "不许切走当前曲"断言 | 每次改完先跑 |
+
+### 24.5 `regress_queue.py` 的用法与局限
+
+```powershell
+cd deploy
+python regress_queue.py      # 七步引导，脚本自动检测操作并断言
+```
+
+判据三条：`界面 fileId == 音箱 TrackURI fileId`、`NrTracks == 清单长度`、
+第 3–6 步"当前曲的 fileId 前后必须一致"。
+
+**局限**：它只能证明"界面与音箱一致"，证不了"用户意图"。
+第 3 步因此特意要求"点一首排在当前曲**之前**的歌"，才会走到 24.1 那个分支。
+
+### 24.6 以后再遇到"时好时坏"
+
+先查三类状态量：`nativeQueueActive`（降级标志）、`queueRevision`（清单是否已同步）、
+`autoAdvanceToken`（本地计时器是否还活着）。给每个提前返回加日志，
+再让用户做一次最小复现——比读代码猜快一个数量级。

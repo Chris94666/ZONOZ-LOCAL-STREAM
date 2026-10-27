@@ -133,6 +133,21 @@ class SonosCastService : Service() {
     /** 上一次看到的队列序号（1 起）；机身按键切歌就是靠它发现 */
     private var lastQueueTrack = 0
 
+    /**
+     * 音箱队列已经和 App 清单对齐到哪个版本（对应 [AppState.queueRevision]）。
+     *
+     * 只要两者不等，说明有代码改了清单却没同步音箱 —— 由 `reconcileQueueIfNeeded`
+     * 在下一个采样周期兜底重建。这一层是"漏了某个入口"的结构性保险。
+     */
+    private var syncedRevision = -1
+
+    /** 自检重建的限流时刻，避免 A 与 B 不一致时反复重建 */
+    private var lastAuditRebuildAtMs = 0L
+
+    /** 对账用：上一次观察到的清单版本，以及它开始"未同步"的时刻 */
+    private var lastSeenRevision = -1
+    private var unsyncedSinceMs = 0L
+
     /** 手动拖动音量后的一小段时间内不接受回读，避免滑块来回跳 */
     private var lastVolumeSetAt = 0L
 
@@ -178,6 +193,10 @@ class SonosCastService : Service() {
             ACTION_PREV -> playRelative(-1)
             ACTION_TOGGLE_SHUFFLE -> toggleShuffle()
             ACTION_CYCLE_REPEAT -> cycleRepeat()
+            ACTION_QUEUE_CHANGED -> syncSpeakerQueue(
+                intent?.getLongExtra(EXTRA_INSERTED_TRACK_ID, -1L) ?: -1L,
+                rebuild = intent?.getBooleanExtra(EXTRA_FORCE_REBUILD, false) ?: false
+            )
             AutoAdvanceReceiver.ACTION_AUTO_ADVANCE ->
                 handleAutoAdvance(intent?.getStringExtra(AutoAdvanceReceiver.EXTRA_TOKEN))
             ACTION_SEEK -> seekTo(intent?.getIntExtra(EXTRA_POSITION, 0) ?: 0)
@@ -813,8 +832,7 @@ class SonosCastService : Service() {
 
         // 签名覆盖**整条清单的顺序**：只比首尾会让 insertNext 之类的中途重排漏掉，
         // 结果音箱还按旧顺序放、App 按新序号 seek → 播错歌。
-        val signature = AppState.shuffle.value.toString() + "|" +
-            queue.joinToString(",") { it.id.toString() }
+        val signature = queueSignature(queue)
         val needRebuild = !nativeQueueActive || signature != sonosQueueSignature
 
         val safeIndex = index.coerceIn(0, queue.lastIndex)
@@ -933,6 +951,10 @@ class SonosCastService : Service() {
             nativeQueueActive = true
             lastQueueTrack = safeIndex + 1
             castSettledAtMs = SystemClock.elapsedRealtime()
+            // 音箱队列已经和当前清单对齐，对账/自检都以这个版本为基准
+            syncedRevision = AppState.queueRevision
+            lastSeenRevision = syncedRevision
+            unsyncedSinceMs = 0L
             lastTransportState = "PLAYING"
             earlyStopRetries = 0
             castAtMs = SystemClock.elapsedRealtime()
@@ -1060,9 +1082,146 @@ class SonosCastService : Service() {
      * 不重建的话，`<Track>` 读到第 N 首、App 却按新顺序解释成另一首，
      * 表现为"界面显示 A、实际在放 B"。所以这里当场重推一次。
      */
-    private fun recastIfQueueActive(reason: String) {
+    /** 现在是"应该用队列模式"吗？只看清单本身，不看历史失败留下的标志 */
+    private fun shouldUseQueue(): Boolean = AppState.queue.value.size >= 2
+
+    /** 队列签名：整条顺序 + 随机开关。变了就得重建音箱队列 */
+    private fun queueSignature(queue: List<Track>): String =
+        AppState.shuffle.value.toString() + "|" + queue.joinToString(",") { it.id.toString() }
+
+    /**
+     * 「下一首播放」之后把这次插入同步写进音箱队列。
+     *
+     * 1.1 之前只改 App 的清单，音箱队列没变：送别放完后音箱按自己的顺序走下一首，
+     * 而 App 按自己的清单认为下一首是刚插进来的那首 —— UI 和声音从此永久错开一位。
+     * 这里用 Sonos 的 `EnqueueAsNext=1` 原生插到"当前曲之后"，两边顺序就一致了。
+     */
+    private fun syncSpeakerQueue(insertedTrackId: Long, rebuild: Boolean = false) {
+        if (!shouldUseQueue()) {
+            LogBus.d("清单已改：清单不足 2 首，保持单曲推送")
+            return
+        }
+        if (AppState.busy.value) {
+            LogBus.d("清单已改：上一次推送还没结束，签名校验会兜底重建")
+            return
+        }
+        // 移动已有曲目：音箱里那份旧副本没法原地删，只能整体重建
+        if (rebuild) {
+            LogBus.d("下一首播放（移动已有曲目）→ 重建队列以对齐")
+            recastIfQueueActive("下一首播放")
+            return
+        }
+        val queue = AppState.queue.value
+        if (queue.isEmpty()) return
+        val speakers = AppState.selectedDevices()
+            .filterNot { it.isSatellite }
+            .filterNot { it.isLegacyS1 }
+        if (speakers.isEmpty()) return
+        val ip = AppState.localIp.value ?: return
+        val port = AppState.serverPort.value
+
+        // 音箱当前若不在队列模式（上一次推送失败退回过），原生插队无处可插，
+        // 直接整队重建一次更稳。
         if (!nativeQueueActive) {
-            LogBus.d("$reason：当前不是队列模式，只改顺序不重建（下次推送会自动对齐）")
+            LogBus.d("清单已改：音箱尚不在队列模式 → 重建队列")
+            recastIfQueueActive("下一首播放")
+            return
+        }
+
+        val inserted = queue.firstOrNull { it.id == insertedTrackId }
+            ?: queue.getOrNull((AppState.queueIndex.value + 1).coerceIn(0, queue.lastIndex))
+            ?: return
+        // 1 起的"当前曲之后"位置：当前是 N（1 起），插入后应排第 N+1
+        val insertAt = (AppState.queueIndex.value + 2).coerceAtLeast(1)
+
+        scope.launch {
+            val item = MediaRegistry.registerTrackSilently(inserted)
+            val url = LocalMediaServer.buildStreamUrl(ip, port, item)
+            val didl = SoapXml.didlLite(inserted.title, url, item.mimeType, inserted.id.toString())
+            var ok = true
+            for (speaker in speakers) {
+                val result = soap.addMultipleUrisToQueue(
+                    speaker,
+                    listOf(url to didl),
+                    firstTrackNumber = insertAt,
+                    enqueueAsNext = true
+                )
+                if (result !is SoapResult.Success) {
+                    ok = false
+                    LogBus.w("原生插队失败（${describeSoapFailure(result)}）")
+                }
+            }
+            if (ok) {
+                sonosQueueSignature = queueSignature(queue)
+                syncedRevision = AppState.queueRevision
+                lastSeenRevision = syncedRevision
+                unsyncedSinceMs = 0L
+                LogBus.i("已把「${inserted.title}」插进音箱队列第 $insertAt 位（原生插队）")
+            } else {
+                LogBus.w("原生插队不成功，改为重建整个队列")
+                recastIfQueueActive("下一首播放")
+            }
+        }
+    }
+
+    /**
+     * 清单版本对账（结构性保险）。
+     *
+     * 任何入口改了 `AppState.queue` 都会让 `queueRevision` 递增；正常路径（点歌 / 原生插队 /
+     * 切随机）会自己把音箱同步好并回写 `syncedRevision`。这里负责抓"漏掉的入口"：
+     * 版本号一直不相等超过一个宽限期，就整队重建，绝不让 UI 与声音长期错位。
+     */
+    private fun reconcileQueueIfNeeded(device: SonosDevice) {
+        if (!shouldUseQueue()) return
+        if (AppState.busy.value) return
+        val revision = AppState.queueRevision
+        if (revision == syncedRevision) {
+            lastSeenRevision = revision
+            unsyncedSinceMs = 0L
+            return
+        }
+        if (revision != lastSeenRevision) {
+            lastSeenRevision = revision
+            unsyncedSinceMs = SystemClock.elapsedRealtime()
+            LogBus.d("清单版本变化 rev=$revision（音箱仍在 rev=$syncedRevision），等待主动同步")
+            return
+        }
+        if (SystemClock.elapsedRealtime() - unsyncedSinceMs < RECONCILE_GRACE_MS) return
+
+        LogBus.w("清单已变但音箱没跟上（rev=$revision / 已同步 $syncedRevision）→ 兜底重建")
+        lastSeenRevision = revision
+        unsyncedSinceMs = 0L
+        recastIfQueueActive("清单对账兜底")
+    }
+
+    /**
+     * 主动自检：音箱队列的曲目数必须等于 App 清单长度。
+     *
+     * 长度不一致是"两边顺序错开"的最早可观测信号（1.1.1 的 off-by-one 就属此类），
+     * 与其等用户发现"界面和声音不一致"，不如这里直接重建并报警。
+     */
+    private suspend fun auditQueue(device: SonosDevice) {
+        if (!shouldUseQueue()) return
+        if (AppState.busy.value) return
+        val expected = AppState.queue.value.size
+        if (expected < 2) return
+        val actual = runCatching { soap.getQueueSize(device) }.getOrNull() ?: return
+        if (actual == expected) return
+        // 限流：同一次不一致不要在每轮自检里反复重建（避免把日志刷爆、把歌打断）
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastAuditRebuildAtMs < AUDIT_REBUILD_COOLDOWN_MS) return
+        lastAuditRebuildAtMs = now
+        LogBus.w("队列自检失败：音箱 $actual 首 / 清单 $expected 首 → 重建队列")
+        recastIfQueueActive("队列自检")
+    }
+
+    private fun recastIfQueueActive(reason: String) {
+        // 注意：这里**不能**用 nativeQueueActive 当门禁。
+        // 上一次推送失败会把该标志置 false，于是"切回列表循环"时永远不重建，
+        // 音箱就一直停在 1 首的单曲队列里（1.1.2 回归脚本第 6 步抓到的 bug）。
+        // 判断依据改成"清单本身够不够长"：够长就该是队列模式，失败就再试。
+        if (!shouldUseQueue()) {
+            LogBus.d("$reason：清单不足 2 首，保持单曲推送")
             return
         }
         if (AppState.busy.value) {
@@ -1141,7 +1300,7 @@ class SonosCastService : Service() {
             // 锁屏 / 通知媒体卡片显示的歌名、艺术家、时长都来自 MediaMetadata
             session.setMetadata(
                 MediaMetadataCompat.Builder()
-                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, track?.title ?: "ZONOZ LOCAL STREAM")
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, track?.title ?: "ZONOZ local stream")
                     .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, track?.artist)
                     .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, track?.album)
                     .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, track?.durationMs ?: 0L)
@@ -1343,6 +1502,12 @@ class SonosCastService : Service() {
                         // 机身按键切歌 / 暂停 / 继续，都只能靠轮询发现
                         syncQueueTrack(active)
                         syncTransportState(active)
+                        // ① 对账：清单版本变了但没人通知音箱 → 这里兜底重建
+                        reconcileQueueIfNeeded(active)
+                        // ② 主动自检：音箱队列长度与 App 清单不一致 → 立刻重建并报警
+                        if (tick % (PROGRESS_SAMPLE_EVERY_TICKS * QUEUE_AUDIT_EVERY_SAMPLES) == 0) {
+                            auditQueue(active)
+                        }
                         if (tick % (PROGRESS_SAMPLE_EVERY_TICKS * VOLUME_POLL_EVERY_SAMPLES) == 0) {
                             syncVolume(active)
                         }
@@ -1458,11 +1623,34 @@ class SonosCastService : Service() {
         // 这时读到的还是上一首的序号，会把高亮抢到别的歌上
         if (SystemClock.elapsedRealtime() - castSettledAtMs < QUEUE_SETTLE_MS) return
         val trackNo = runCatching { soap.getQueueTrackNumber(device) }.getOrNull() ?: return
-        if (trackNo <= 0 || trackNo == lastQueueTrack) return
+        if (trackNo <= 0) return
 
+        val queue = AppState.queue.value
+        if (queue.isEmpty()) return
+        val indexByNo = (trackNo - 1).coerceIn(0, queue.lastIndex)
+
+        // 关键：按**内容**（TrackURI 里的 fileId）反查，而不是按序号。
+        // 清单一旦和音箱队列错位（例如"下一首播放"只改了 App 的清单），
+        // 按序号映射会永久偏一位：UI 显示第 48 首、实际在放第 49 首（1.1.1 的实测 bug）。
+        val playingUri = runCatching { soap.getPlaybackTrackUri(device) }.getOrNull()
+        val playingId = playingUri
+            ?.substringAfterLast("/stream/", "")
+            ?.substringBefore('.')
+            ?.takeIf { it.isNotEmpty() }
+        val indexByContent = playingId?.let { fid ->
+            queue.indexOfFirst { MediaRegistry.fileIdFor(it.uri) == fid }
+        } ?: -1
+
+        val index = if (indexByContent >= 0) indexByContent else indexByNo
+        val track = queue.getOrNull(index) ?: return
+        if (trackNo == lastQueueTrack && index == AppState.queueIndex.value) return
+
+        if (indexByContent < 0 && playingId != null) {
+            LogBus.w("音箱放的不是清单里的这首（$playingId），按序号 $trackNo 兜底")
+        } else if (indexByContent >= 0 && indexByContent != indexByNo) {
+            LogBus.w("清单与音箱队列错位（音箱第 $trackNo 首 = 清单第 ${indexByContent + 1} 首），已按内容校正")
+        }
         lastQueueTrack = trackNo
-        val index = trackNo - 1
-        val track = AppState.queue.value.getOrNull(index) ?: return
         LogBus.i("音箱切到了队列第 $trackNo 首 →「${track.title}」")
         AppState.queueIndex.value = index
         MediaRegistry.registerTrack(track)
@@ -1501,6 +1689,14 @@ class SonosCastService : Service() {
      */
     private fun scheduleAutoAdvance() {
         cancelAutoAdvance()
+
+        // 队列模式下**必须**让音箱自己续播：本地计时器一旦抢跑，就会在音箱已经
+        // 切到下一首之后又发一次 Next，把刚播了几秒的歌直接跳过
+        // （10:02:55 开始播「奔跑」，10:03:02 被这条计时器推到「Boléro」——1.1.4 的真 bug）。
+        if (nativeQueueActive) {
+            LogBus.d("队列模式：由音箱自己续播，不排本地计时器")
+            return
+        }
 
         val track = currentTrack()
 
@@ -1549,6 +1745,11 @@ class SonosCastService : Service() {
      */
     private suspend fun verifyThenAdvance(token: String) {
         if (autoAdvanceToken != token) return
+        if (nativeQueueActive) {
+            LogBus.d("队列模式：本地续播计时器作废（由音箱自己续播）")
+            cancelAutoAdvance()
+            return
+        }
 
         val playing = AppState.coordinators().firstOrNull { device ->
             AppState.deviceStatus.value[device.key] == DeviceStatus.PLAYING
@@ -1601,6 +1802,13 @@ class SonosCastService : Service() {
             LogBus.d("收到过期的续播闹钟，忽略（已切过歌）")
             return
         }
+        // 队列模式下音箱自己会续播；这条闹钟只是历史遗留，收到就作废，
+        // 否则会把正在播的歌强行推到下一首（1.1.4 的真 bug）。
+        if (nativeQueueActive) {
+            LogBus.d("队列模式：忽略续播闹钟（由音箱自己接下一首）")
+            cancelAutoAdvance()
+            return
+        }
         LogBus.i("续播计时器（闹钟唤醒）触发 → 推下一首")
         cancelAutoAdvance()
         playRelative(1, auto = true)
@@ -1641,7 +1849,7 @@ class SonosCastService : Service() {
             AppState.deviceStatus.value[it.key] == DeviceStatus.PLAYING
         }
 
-        val title = track?.title ?: AppState.nowPlayingTitle.value ?: "ZONOZ LOCAL STREAM"
+        val title = track?.title ?: AppState.nowPlayingTitle.value ?: "ZONOZ local stream"
         val subtitle = track?.subtitle ?: buildString {
             append(
                 if (port > 0) I18n.f(Str.PORT_N, port.toString())
@@ -1846,6 +2054,15 @@ class SonosCastService : Service() {
         /** 刚推完队列后，等这么久再让轮询跟随音箱序号 */
         private const val QUEUE_SETTLE_MS = 1_500L
 
+        /** 清单变了之后给"主动同步"留的宽限期；超过就由对账兜底重建 */
+        private const val RECONCILE_GRACE_MS = 4_000L
+
+        /** 每多少次采样做一次队列长度自检（2s 一次采样 × 5 ≈ 10 秒） */
+        private const val QUEUE_AUDIT_EVERY_SAMPLES = 5
+
+        /** 自检发现不一致后，最少间隔这么久才再重建一次 */
+        private const val AUDIT_REBUILD_COOLDOWN_MS = 60_000L
+
         /** 灌队列时每次塞多少首（实测音箱上限 16，18 就 402/500，取 12 留余量） */
         private const val QUEUE_CHUNK_SIZE = 12
 
@@ -1855,6 +2072,8 @@ class SonosCastService : Service() {
         private const val EXTRA_VOLUME = "extra_volume"
         private const val EXTRA_IP = "extra_ip"
         private const val EXTRA_POSITION = "extra_position"
+        private const val EXTRA_INSERTED_TRACK_ID = "extra_inserted_track_id"
+        private const val EXTRA_FORCE_REBUILD = "extra_force_rebuild"
 
         private const val ACTION_START = "com.sonoscast.local.action.START"
         private const val ACTION_SCAN = "com.sonoscast.local.action.SCAN"
@@ -1866,6 +2085,7 @@ class SonosCastService : Service() {
         private const val ACTION_PREV = "com.sonoscast.local.action.PREV"
         private const val ACTION_TOGGLE_SHUFFLE = "com.sonoscast.local.action.TOGGLE_SHUFFLE"
         private const val ACTION_CYCLE_REPEAT = "com.sonoscast.local.action.CYCLE_REPEAT"
+        private const val ACTION_QUEUE_CHANGED = "com.sonoscast.local.action.QUEUE_CHANGED"
         private const val ACTION_SEEK = "com.sonoscast.local.action.SEEK"
         private const val ACTION_SET_VOLUME = "com.sonoscast.local.action.SET_VOLUME"
         private const val ACTION_ADD_MANUAL = "com.sonoscast.local.action.ADD_MANUAL"
@@ -1922,6 +2142,16 @@ class SonosCastService : Service() {
         fun previous(context: Context) = send(context, ACTION_PREV)
         fun toggleShuffle(context: Context) = send(context, ACTION_TOGGLE_SHUFFLE)
         fun cycleRepeat(context: Context) = send(context, ACTION_CYCLE_REPEAT)
+
+        /**
+         * 播放清单被"下一首播放"改过之后调用：把这次插入**同步写进音箱的队列**。
+         *
+         * 1.1 之前只改了 App 的清单，音箱的队列没变 —— 送别放完后音箱按自己的顺序走了
+         * 下一首（Serenade），而 App 按自己的清单认为下一首是 Under Pressure，
+         * 于是 UI 和声音永久错开一位（1.1.1 修）。
+         */
+        fun queueChanged(context: Context, insertedTrackId: Long = -1L, rebuild: Boolean = false) =
+            send(context, ACTION_QUEUE_CHANGED, insertedTrackId = insertedTrackId, forceRebuild = rebuild)
         fun seek(context: Context, seconds: Int) = send(context, ACTION_SEEK, position = seconds)
         fun setVolume(context: Context, volume: Int) = send(context, ACTION_SET_VOLUME, volume = volume)
         fun addManualDevice(context: Context, ip: String) = send(context, ACTION_ADD_MANUAL, ip = ip)
@@ -1932,12 +2162,16 @@ class SonosCastService : Service() {
             action: String,
             volume: Int? = null,
             ip: String? = null,
-            position: Int? = null
+            position: Int? = null,
+            insertedTrackId: Long? = null,
+            forceRebuild: Boolean? = null
         ) {
             val intent = Intent(context, SonosCastService::class.java).setAction(action)
             volume?.let { intent.putExtra(EXTRA_VOLUME, it) }
             ip?.let { intent.putExtra(EXTRA_IP, it) }
             position?.let { intent.putExtra(EXTRA_POSITION, it) }
+            insertedTrackId?.let { intent.putExtra(EXTRA_INSERTED_TRACK_ID, it) }
+            forceRebuild?.let { intent.putExtra(EXTRA_FORCE_REBUILD, it) }
             try {
                 ContextCompat.startForegroundService(context, intent)
             } catch (t: Throwable) {

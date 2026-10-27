@@ -1,4 +1,4 @@
-# ZONOZ LOCAL STREAM · 本地音乐推送
+# ZONOZ local stream · 本地音乐推送
 
 把手机里的本地音频，通过 **自建 HTTP 服务器 + 直连 Sonos 的 UPnP/SOAP 接口**，推送到两台 Play:1 上播放。
 全程离线、纯局域网，不依赖 Sonos 官方 App，不经过任何云服务，不需要登录账号。

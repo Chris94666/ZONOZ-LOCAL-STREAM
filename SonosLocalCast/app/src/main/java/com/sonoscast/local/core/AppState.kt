@@ -154,6 +154,29 @@ object AppState {
     /** 未打乱的原始顺序（用户点歌时所在的列表），关随机时用来还原 */
     private var queueSource: List<Track> = emptyList()
 
+    /**
+     * 清单版本号：每次清单内容/顺序变化 +1。
+     *
+     * Service 侧靠它判断"音箱队列是不是已经落后于 App 清单"——
+     * 这样就不需要每个改清单的入口自己记得去同步音箱（那正是 1.1/1.1.1
+     * 反复出错的根源：漏一个入口，序号就永久偏一位）。
+     */
+    var queueRevision: Int = 0
+        private set
+
+    /**
+     * 修改播放清单的**唯一入口**。
+     *
+     * 任何想改清单的代码都必须走这里，否则 `queueRevision` 不会递增，
+     * 对账机制就失效。改动原因 [reason] 会写进日志，方便回溯是谁改的。
+     */
+    fun updateQueue(next: List<Track>, reason: String) {
+        if (next === queue.value) return
+        queue.value = next
+        queueRevision++
+        LogBus.d("清单已变更（$reason）：${next.size} 首 · rev=$queueRevision")
+    }
+
     fun currentFromQueue(): Track? = queue.value.getOrNull(queueIndex.value)
 
     /**
@@ -165,7 +188,7 @@ object AppState {
     fun startQueue(source: List<Track>, current: Track) {
         queueSource = source
         val ordered = orderFor(source, current)
-        queue.value = ordered
+        updateQueue(ordered, "点歌建立清单")
         val found = ordered.indexOfFirst { it.id == current.id }
         queueIndex.value = if (found >= 0) found else 0
         markPendingTrack(current)
@@ -199,24 +222,48 @@ object AppState {
      *
      * @return true = 顺序有变化；false = 本来就满足（或不允许）
      */
+    /**
+     * 上一次 [insertNext] 是"移动清单里已有的曲目"（true）还是"插入新曲目"（false）。
+     *
+     * 移动时音箱队列里那份旧副本还在原位，原生插队会造成两份，
+     * 必须改用"重建整个队列"来对齐（见 `SonosCastService.syncSpeakerQueue`）。
+     */
+    var lastInsertWasMove: Boolean = false
+        private set
+
     fun insertNext(track: Track): Boolean {
         if (repeatMode.value == RepeatMode.ONE && !shuffle.value) return false
 
         val list = queue.value.toMutableList()
-        val currentId = list.getOrNull(queueIndex.value)?.id
+        var currentIdx = queueIndex.value.coerceIn(0, (list.size - 1).coerceAtLeast(0))
+        val currentId = list.getOrNull(currentIdx)?.id
 
         // 就是当前正在播的这首，挪不动
         if (track.id == currentId) return false
 
         val existing = list.indexOfFirst { it.id == track.id }
         // 已经紧挨着当前曲，无需改动
-        if (existing >= 0 && existing == queueIndex.value + 1) return false
+        if (existing >= 0 && existing == currentIdx + 1) return false
 
-        if (existing >= 0) list.removeAt(existing)
+        if (existing >= 0) {
+            list.removeAt(existing)
+            // 关键：如果摘掉的这条在当前曲**前面**，当前曲的位置要跟着前移一位。
+            // 不修正的话 queueIndex 会指向"下一首"，随后重建队列就 seek 到别的歌，
+            // 用户听到的是"点了下一首播放，音乐立刻跳到另一首"（1.1.3 的真 bug）。
+            if (existing < currentIdx) currentIdx--
+        }
 
-        val insertAt = (queueIndex.value + 1).coerceIn(0, list.size)
+        // 记下这次是"移动已有曲目"还是"插入新曲目"：
+        //   移动 → 音箱里那份旧副本还在原位，只能用重建队列来一致；
+        //   新增 → 可以用 Sonos 的 EnqueueAsNext 原生插队（不打断播放）。
+        lastInsertWasMove = existing >= 0
+
+        val insertAt = (currentIdx + 1).coerceIn(0, list.size)
+        if (list.getOrNull(insertAt)?.id == track.id) return false
         list.add(insertAt, track)
-        queue.value = list
+
+        queueIndex.value = currentIdx.coerceIn(0, list.lastIndex)
+        updateQueue(list, "下一首播放")
         return true
     }
 
@@ -258,7 +305,7 @@ object AppState {
         val current = currentFromQueue() ?: return
         val source = queueSource.ifEmpty { queue.value }
         val ordered = orderFor(source, current)
-        queue.value = ordered
+        updateQueue(ordered, "重排（随机/循环）")
         queueIndex.value = ordered.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
     }
 
@@ -339,7 +386,7 @@ object AppState {
         nowPlayingTitle.value = null
         positionSec.value = 0L
         durationSec.value = 0L
-        queue.value = emptyList()
+        updateQueue(emptyList(), "清空清单")
         queueIndex.value = -1
         queueSource = emptyList()
         deviceStatus.value = emptyMap()

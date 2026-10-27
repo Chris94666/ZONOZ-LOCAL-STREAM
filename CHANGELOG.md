@@ -1,11 +1,159 @@
 # Changelog · 更新日志
 
-ZONOZ LOCAL STREAM — Android app that streams local music from your phone to Sonos over your LAN.
-ZONOZ LOCAL STREAM —— 把手机本地音乐通过局域网直接推给 Sonos 播放的 Android 应用。
+ZONOZ local stream — Android app that streams local music from your phone to Sonos over your LAN.
+ZONOZ local stream —— 把手机本地音乐通过局域网直接推给 Sonos 播放的 Android 应用。
 
-> Version note: everything developed after 1.0.1 is released as a single **1.0.2**
-> (`versionCode 33`, kept monotonic so existing installs can upgrade in place).
-> 版本说明：1.0.1 之后的所有迭代合并为 **1.0.2** 一次发布（`versionCode 33`，保持单调递增以便覆盖安装）。
+> Current release: **1.1.4** (`versionCode 50`). Version codes stay monotonic so existing
+> installs upgrade in place; 1.0.3–1.0.10 and 1.1.1–1.1.3 were internal iterations folded into
+> the next public release.
+> 当前发布：**1.1.4**（`versionCode 50`）。versionCode 保持单调递增以便覆盖安装；
+> 1.0.3–1.0.10、1.1.1–1.1.3 均为内部迭代，随后并入公开发布。
+
+---
+
+## v1.1.4 — 2026-10-27
+
+### 中文
+
+**品牌写法统一为 `ZONOZ local stream`**（原来是全大写 `ZONOZ LOCAL STREAM`）。
+
+| 位置 | 现在 |
+| --- | --- |
+| 安装后的应用名 | `ZONOZ local stream` |
+| 播放页顶栏 | `ZONOZ  local stream`（副标改为小写，字距从 1.4 收到 0.4） |
+| 设置 → 关于 标题 | `ZONOZ local stream` |
+| 通知 / 媒体会话兜底标题 | `ZONOZ local stream` |
+| 诊断网页 `<title>` / `<h1>` | `ZONOZ local stream · 本地媒体服务` |
+| README / CHANGELOG / AGENTS 文档 | `ZONOZ local stream` |
+
+保持不变：包名 `com.sonoscast.local`、媒体会话 tag、通知封面右下角的 `ZONOZ` 五字母角标、
+桌面图标字样 —— 它们都不是"ZONOZ LOCAL STREAM"这个短语的显示位置。
+
+### English
+
+**Brand casing unified to `ZONOZ local stream`** (was all-caps `ZONOZ LOCAL STREAM`).
+
+| where | now |
+| --- | --- |
+| installed app label | `ZONOZ local stream` |
+| player screen top bar | `ZONOZ  local stream` (sub-label lowercased, tracking 1.4 → 0.4) |
+| Settings → About title | `ZONOZ local stream` |
+| notification / media-session fallback title | `ZONOZ local stream` |
+| diagnostic page `<title>` / `<h1>` | `ZONOZ local stream · local media service` |
+| README / CHANGELOG / AGENTS | `ZONOZ local stream` |
+
+Unchanged: package name, media-session tag, the five-letter `ZONOZ` badge on notification
+artwork, and the launcher icon lettering — none of them render the phrase itself.
+
+---
+
+## v1.1.3 — 2026-10-27
+
+### 中文
+
+这一版把「界面与声音不一致」这一整类问题**从结构上**堵住，而不是逐条打补丁。
+
+**1. 「下一首播放」后音乐立刻跳走、播的不是点的那首**
+
+`insertNext()` 把歌从清单里摘出来时，如果它排在当前曲**之前**，当前曲的位置会前移一位，
+但 `queueIndex` 没有跟着减 —— 于是后续重建队列按错误的序号 seek，跳到别的歌上。
+
+修法：摘除时若 `existing < currentIdx` 就 `currentIdx--`，插入后把 `queueIndex` 写回修正值。
+
+**2. 音箱取流 404，导致它跳过整首**
+
+fileId 是 `md5(uri)` 前 12 位，可复算但**不可逆**。进程重启后内存注册表是空的，
+而音箱队列里还留着上一轮的 URL —— 音箱来取流时拿到 404，于是**跳过该曲**直接放下一首，
+听感就是"音乐自己跳了 / 与界面不一致"。
+
+修法：`handleStream` 找不到时回曲库按 `md5(uri)` 反推并补注册。
+真机实测：未注册的 fileId 返回 200 + 正确长度；伪造 id 仍返回 404。
+
+**3. 队列模式下本地续播计时器抢跑（最隐蔽的一条）**
+
+架构规定"队列模式由音箱自己续播，关掉本地计时器"，但这条约束只写在注释里：
+拖动进度条会重新排计时器，到点就发 `Next`，把刚播了几秒的歌推走。
+实测：`奔跑` 播了 7 秒后被推到 `Boléro`，用户感知是"放完 Amazing Day 直接到 Boléro"。
+
+修法：三处闸门全部按"是否队列模式"判断 —— 排计时器时、本地计时器到点时、闹钟唤醒时。
+
+**4. 结构性改造（防止"漏一个入口"再次发生）**
+
+| 措施 | 实现 |
+| --- | --- |
+| 单一写入口 | `AppState.updateQueue(next, reason)` 是唯一改清单的函数，内部 `queueRevision++` |
+| 单一对账点 | 每 2 秒采样时比较版本号，清单变了但音箱没跟上超过 4 秒 → 整队重建 |
+| 按内容认歌 | 用 `TrackURI` 的 fileId 反查清单，序号只做兜底并记日志 |
+| 主动自检 | 每约 10 秒比对 `NrTracks` 与清单长度，不一致就重建并报警（60 秒限流） |
+| 回归脚本 | `deploy/regress_queue.py`：七条路径，断言"界面 fileId == 音箱 fileId"且"该步骤不应切走当前曲" |
+
+**5. 「下一首播放」不再整队重建**
+
+清单里**没有**的新曲用 Sonos 原生 `EnqueueAsNext=1` 插到当前曲之后（实测落在当前曲 +1 位，
+不打断播放）；只有"移动已有曲目"才重建（音箱里那份旧副本无法原地删除，该固件
+`RemoveTrackFromQueue` 返回 500）。
+
+**回归结果：7/7 通过**
+
+```
+1 曲库点歌   2 清单点歌   3 下一首播放（点在前的歌）  4 下一首播放（清单靠后的歌）
+5 切随机     6 切循环     7 机身下一首
+```
+
+### English
+
+This release closes the whole "UI and sound disagree" class of bugs **structurally**
+instead of patching one entry point at a time.
+
+**1. "Play next" made the music jump immediately and played the wrong song**
+
+When `insertNext()` removed a track that sat **before** the current one, the current
+index shifted down by one but `queueIndex` was not decremented, so the following queue
+rebuild seeked to the wrong track.
+
+Fix: decrement the current index when the removed item was before it, and write the
+corrected index back after inserting.
+
+**2. The speaker got a 404 when streaming, so it skipped the track**
+
+fileId is `md5(uri)[:12]` — recomputable but not invertible. After a process restart the
+in-memory registry is empty while the speaker's queue still holds the previous URLs, so
+the speaker received 404 and **skipped that track**, which sounds like "the music jumped
+by itself / does not match the UI".
+
+Fix: when `handleStream` cannot find the id, resolve it from the library by recomputing
+`md5(uri)`. Measured on device: unregistered ids now return 200 with the right length,
+bogus ids still return 404.
+
+**3. The local auto-advance timer fired while in queue mode (the most hidden one)**
+
+The architecture says "in queue mode the speaker advances by itself, disable the local
+timer", but that rule only lived in a comment: dragging the progress bar re-armed the
+timer, and when it fired it sent `Next`, pushing away a song that had just started.
+Measured: `奔跑` played 7 s and was pushed to `Boléro`, which the user perceived as
+"after Amazing Day it jumped straight to Boléro".
+
+Fix: three guards, all keyed on queue mode — when scheduling, when the local timer fires,
+and when the alarm wakes the service.
+
+**4. Structural changes**
+
+| measure | implementation |
+| --- | --- |
+| single writer | `AppState.updateQueue(next, reason)`, bumps `queueRevision` |
+| single reconciler | every 2 s poll compares revisions; unsynced > 4 s ⇒ rebuild |
+| content-based mapping | resolve the playing track from `TrackURI`'s fileId, index only as fallback |
+| active self-check | every ~10 s compare `NrTracks` with the queue length, rebuild + warn (60 s throttle) |
+| regression script | `deploy/regress_queue.py`, seven paths, asserts UI fileId == speaker fileId and "this step must not switch the current track" |
+
+**5. "Play next" no longer rebuilds the whole queue**
+
+A track that is not in the queue is inserted natively with `EnqueueAsNext=1` (measured:
+lands at current+1, playback uninterrupted). Only *moving* an existing track rebuilds,
+because the duplicate cannot be removed in place on this firmware
+(`RemoveTrackFromQueue` returns 500).
+
+**Regression: 7/7 passed.**
 
 ---
 
