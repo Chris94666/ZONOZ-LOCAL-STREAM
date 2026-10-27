@@ -1,4 +1,4 @@
-# ZONOZ local stream · 本地音乐推送
+# ZONOZ LOCAL STREAM · 本地音乐推送
 
 把手机里的本地音频，通过 **自建 HTTP 服务器 + 直连 Sonos 的 UPnP/SOAP 接口**，推送到两台 Play:1 上播放。
 全程离线、纯局域网，不依赖 Sonos 官方 App，不经过任何云服务，不需要登录账号。
@@ -27,7 +27,7 @@
 | minSdk / targetSdk | 26 / 35（Android 8.0 ~ Android 15） |
 | ABI | arm64-v8a, armeabi-v7a, x86, x86_64 |
 | 大小 | 约 11 MB |
-| 签名 | `keystore/sonoscast.jks` · alias `sonoscast` · 口令 `sonoscast` |
+| 签名 | 自签名 keystore（口令见 `local.properties`，不入库） |
 
 已在本机完成一次完整构建验证：`BUILD SUCCESSFUL`（JDK 17.0.2 + Gradle 8.9 + AGP 8.7.3 + SDK 35）。
 
@@ -113,27 +113,21 @@ gradle wrapper --gradle-version 8.9
 ### 签名
 
 ```bash
-keytool -genkeypair -v -keystore sonoscast.jks \
-  -alias sonoscast -keyalg RSA -keysize 2048 -validity 10000
+keytool -genkeypair -v -keystore my-release.jks \
+  -alias my-key -keyalg RSA -keysize 2048 -validity 10000
 ```
 
-在 `app/build.gradle.kts` 里补：
+把口令写进 `local.properties`（该文件已被 `.gitignore` 忽略，**不要提交**）：
 
-```kotlin
-android {
-    signingConfigs {
-        create("release") {
-            storeFile = file("../sonoscast.jks")
-            storePassword = "你的密码"
-            keyAlias = "sonoscast"
-            keyPassword = "你的密码"
-        }
-    }
-    buildTypes {
-        release { signingConfig = signingConfigs.getByName("release") }
-    }
-}
+```properties
+signing.storeFile=../my-release.jks
+signing.storePassword=你的密码
+signing.keyAlias=my-key
+signing.keyPassword=你的密码
 ```
+
+`app/build.gradle.kts` 会自动读取这几个键；缺任意一项时，构建会直接报错并提示，
+不会静默用某个默认口令签名。
 
 或用 `Build` → `Generate Signed Bundle / APK…` 走向导，无需改脚本。
 自己用的话，debug APK 已经够用（debug keystore 由 AS 自动生成，可直接安装）。
@@ -282,3 +276,4 @@ app/src/main/java/com/sonoscast/local/
 - **不支持 DSD / APE / OGG 高码率**：Play:1 的硬解能力有限，714 时请转码为 MP3 或 FLAC。
 - **单曲推送**：当前一次只推一个文件，没有做播放列表与自动下一首。
 - **HTTP 明文**：`usesCleartextTraffic="true"`，仅限局域网使用，不要暴露到公网。
+

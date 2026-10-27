@@ -16,7 +16,7 @@ App(NanoHTTPD :8080) ──SetAVTransportURI(URL)──► Sonos :1400 /AVTransp
         └────────── GET /stream/<fileId>（Range）───────┘
 ```
 
-包名 `com.sonoscast.local`，当前 **1.1.4 (versionCode 50)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ local stream，minSdk 26 / targetSdk 35。
+包名 `com.sonoscast.local`，当前 **1.1.5 (versionCode 51)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ local stream，minSdk 26 / targetSdk 35。
 
 ---
 
@@ -87,8 +87,8 @@ Copy-Item "$env:TEMP\s1.png" "deploy\shots\p1.png"
 
 ## 6. 实测到的家庭环境
 
-- 手机：Redmi K80 Pro = `Redmi K80 Pro`（Android 16 / API 36），之前 IP `192.168.1.20`
-- 电脑：`192.168.1.2`
+- 手机：Redmi K80 Pro = `Redmi K80 Pro`（Android 16 / API 36），之前 IP `192.168.1.5`
+- 电脑：`192.168.1.10`
 - 音箱：**客厅一对 Play:1 立体声配对**（S2，固件 86.10-81100）
   - `.4` = `RINCON_XXXXXXXXXXXXXXXXXX` = **主箱 / RF / Coordinator**
   - `.3` = `RINCON_YYYYYYYYYYYYYYYYYY` = **从箱 / LF / Invisible=1**
@@ -98,7 +98,7 @@ Copy-Item "$env:TEMP\s1.png" "deploy\shots\p1.png"
 
 ```powershell
 # 每台都应返回 200 + ZoneGroupState
-curl.exe -s -X POST "http://192.168.1.21:1400/ZoneGroupTopology/Control" `
+curl.exe -s -X POST "http://192.168.1.4:1400/ZoneGroupTopology/Control" `
   -H "SOAPACTION: \"urn:schemas-upnp-org:service:ZoneGroupTopology:1#GetZoneGroupState\"" `
   -H "Content-Type: text/xml; charset=utf-8" `
   --data-binary '<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetZoneGroupState xmlns:u="urn:schemas-upnp-org:service:ZoneGroupTopology:1"/></s:Body></s:Envelope>'

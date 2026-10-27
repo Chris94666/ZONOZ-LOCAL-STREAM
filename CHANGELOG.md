@@ -3,14 +3,47 @@
 ZONOZ local stream — Android app that streams local music from your phone to Sonos over your LAN.
 ZONOZ local stream —— 把手机本地音乐通过局域网直接推给 Sonos 播放的 Android 应用。
 
-> Current release: **1.1.4** (`versionCode 50`). Version codes stay monotonic so existing
+> Current release: **1.1.5** (`versionCode 51`). Version codes stay monotonic so existing
 > installs upgrade in place; 1.0.3–1.0.10 and 1.1.1–1.1.3 were internal iterations folded into
 > the next public release.
-> 当前发布：**1.1.4**（`versionCode 50`）。versionCode 保持单调递增以便覆盖安装；
+> 当前发布：**1.1.5**（`versionCode 51`）。versionCode 保持单调递增以便覆盖安装；
 > 1.0.3–1.0.10、1.1.1–1.1.3 均为内部迭代，随后并入公开发布。
 
 ---
 
+## v1.1.5 — 2026-10-27
+
+### 中文
+
+**安全修复：公开仓库里不再出现签名口令。**
+
+`app/build.gradle.kts` 原本把开发用 keystore 的口令/别名写成默认回退值，`SonosLocalCast/README.md`
+也把口令写在了签名说明表格里，两者都会随开源代码公开。
+
+- 签名相关的三个值改为**必须**来自 `local.properties`（已被 `.gitignore` 忽略）或环境变量
+  `ZONOZ_STORE_PASSWORD` / `ZONOZ_KEY_ALIAS` / `ZONOZ_KEY_PASSWORD`；
+- 缺任意一项时构建**直接报错**并提示配置方法，不再静默使用某个默认口令；
+- README 的签名章节改为引导用户生成自己的 keystore，并把口令写进 `local.properties`。
+
+> 说明：密钥文件（`.jks`）从未进入公开仓库，`local.properties` 也没有；
+> 因此泄露的仅是口令字面量，单独并不可用于签名。仍建议在意的用户轮换密钥。
+
+### English
+
+**Security fix: the public repository no longer contains a signing password.**
+
+`app/build.gradle.kts` used the dev keystore's password and alias as hard-coded fallbacks, and
+`SonosLocalCast/README.md` listed the password in its signing table — both shipped with the source.
+
+- the three signing values must now come from `local.properties` (gitignored) or the
+  `ZONOZ_STORE_PASSWORD` / `ZONOZ_KEY_ALIAS` / `ZONOZ_KEY_PASSWORD` environment variables;
+- a missing value fails the build with an explicit message instead of silently signing with a default;
+- the README's signing section now walks through generating your own keystore.
+
+> The keystore file itself never entered the public repo (nor did `local.properties`), so the leak
+> was the password literal only, which is useless on its own. Rotating the key is still advisable.
+
+---
 ## v1.1.4 — 2026-10-27
 
 ### 中文

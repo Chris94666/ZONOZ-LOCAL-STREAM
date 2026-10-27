@@ -15,7 +15,7 @@ val localProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
-fun signingProp(key: String, env: String, fallback: String): String =
+fun signingProp(key: String, env: String, fallback: String = ""): String =
     localProps.getProperty(key) ?: System.getenv(env) ?: fallback
 
 val selfKeystore = file(
@@ -28,11 +28,23 @@ android {
 
     signingConfigs {
         if (selfKeystore.exists()) {
+            // 口令**不能**有硬编码回退：本文件是公开的。
+            // 本地放在 local.properties（已被 .gitignore 忽略），CI 用环境变量。
+            val storePass = signingProp("signing.storePassword", "ZONOZ_STORE_PASSWORD")
+            val alias = signingProp("signing.keyAlias", "ZONOZ_KEY_ALIAS")
+            val keyPass = signingProp("signing.keyPassword", "ZONOZ_KEY_PASSWORD")
+            if (storePass.isBlank() || alias.isBlank() || keyPass.isBlank()) {
+                throw GradleException(
+                    "缺少签名口令：请在 SonosLocalCast/local.properties 里配置 " +
+                        "signing.storePassword / signing.keyAlias / signing.keyPassword，" +
+                        "或设置同名环境变量 ZONOZ_STORE_PASSWORD / ZONOZ_KEY_ALIAS / ZONOZ_KEY_PASSWORD"
+                )
+            }
             create("self") {
                 storeFile = selfKeystore
-                storePassword = signingProp("signing.storePassword", "ZONOZ_STORE_PASSWORD", "sonoscast")
-                keyAlias = signingProp("signing.keyAlias", "ZONOZ_KEY_ALIAS", "sonoscast")
-                keyPassword = signingProp("signing.keyPassword", "ZONOZ_KEY_PASSWORD", "sonoscast")
+                storePassword = storePass
+                keyAlias = alias
+                keyPassword = keyPass
             }
         }
     }
@@ -43,8 +55,8 @@ android {
         targetSdk = 35
         // 对外版本从 1.0 起算（首个开源版本）；versionCode 保持单调递增，
         // 这样老用户能正常覆盖安装。
-        versionCode = 50
-        versionName = "1.1.4"
+        versionCode = 51
+        versionName = "1.1.5"
     }
 
     buildTypes {
