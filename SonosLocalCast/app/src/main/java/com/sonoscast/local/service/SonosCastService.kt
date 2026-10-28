@@ -1084,7 +1084,7 @@ class SonosCastService : Service() {
         AppState.setRepeatMode(AppState.repeatMode.value.next())
         LogBus.i("播放模式 → ${playModeLabel()}")
         updateNotification()
-        recastIfQueueActive("循环切换")
+        applyPlayModeOnly("循环切换")
     }
 
     /**
@@ -1227,6 +1227,37 @@ class SonosCastService : Service() {
         recastIfQueueActive("队列自检")
     }
 
+
+    /**
+     * 只切播放模式，不动队列。
+     *
+     * 循环（列表/单曲）的切换只影响 Sonos 的播放模式，重建队列纯属浪费：
+     * RemoveAllTracksFromQueue + 重新入队会让声音中断 0.5-2 秒（用户实测"顿一下"）。
+     */
+    private fun applyPlayModeOnly(reason: String) {
+        if (!shouldUseQueue()) {
+            LogBus.d(reason + "：不是队列模式，只刷新界面状态")
+            syncPlaybackStateToDevices()
+            return
+        }
+        val speaker = AppState.coordinators().firstOrNull()
+        if (speaker == null) {
+            LogBus.w(reason + "：没有可用主箱")
+            return
+        }
+        scope.launch {
+            val mode = nativePlayMode()
+            val r = runCatching { soap.setPlayMode(speaker, mode) }.getOrNull()
+            if (r is SoapResult.Success) {
+                LogBus.i(reason + " → 只切播放模式：" + mode + "（不重建队列）")
+            } else {
+                LogBus.w(reason + "：SetPlayMode 失败，退回重建队列")
+                recastIfQueueActive(reason)
+            }
+            syncPlaybackStateToDevices()
+        }
+    }
+
     private fun recastIfQueueActive(reason: String) {
         // 唯一重建入口：先确认音箱上放的还是我们的 /stream/。
         // 否则"接管瞬间的那一次对账"仍会把 Sonos App 的播放顶掉（1.1.6 实测残留）。
@@ -1313,14 +1344,14 @@ class SonosCastService : Service() {
                             LogBus.i("媒体控件切换随机：${if (on) "开" else "关"}")
                             AppState.setShuffle(on)
                             recastIfQueueActive("媒体控件随机")
-                            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                            syncPlaybackStateToDevices()
                         }
                         ACTION_TOGGLE_REPEAT -> {
                             val one = AppState.repeatMode.value != RepeatMode.ONE
                             LogBus.i("媒体控件切换循环：${if (one) "单曲" else "列表"}")
                             AppState.setRepeatMode(if (one) RepeatMode.ONE else RepeatMode.ALL)
-                            recastIfQueueActive("媒体控件循环")
-                            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                            applyPlayModeOnly("媒体控件循环")
+                            syncPlaybackStateToDevices()
                         }
                     }
                 }
@@ -1332,7 +1363,7 @@ class SonosCastService : Service() {
                         LogBus.i("通知栏切换随机：${if (on) "开" else "关"}")
                         AppState.setShuffle(on)
                         recastIfQueueActive("通知栏随机")
-                        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                        syncPlaybackStateToDevices()
                     }
                 }
 
@@ -1342,14 +1373,22 @@ class SonosCastService : Service() {
                     if (next != AppState.repeatMode.value) {
                         LogBus.i("通知栏切换循环：${if (one) "单曲" else "列表"}")
                         AppState.setRepeatMode(next)
-                        recastIfQueueActive("通知栏循环")
-                        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                        applyPlayModeOnly("通知栏循环")
+                        syncPlaybackStateToDevices()
                     }
                 }
             })
             isActive = true
         }
         updatePlaybackState(PlaybackStateCompat.STATE_NONE)
+    }
+
+    /** 媒体控件的状态跟随音箱真实播放状态，否则按钮会显示成"暂停"、进度条停走 */
+    private fun syncPlaybackStateToDevices() {
+        val playing = AppState.deviceStatus.value.values.any { it == DeviceStatus.PLAYING }
+        updatePlaybackState(
+            if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        )
     }
 
     private fun updatePlaybackState(state: Int) {
@@ -1379,12 +1418,20 @@ class SonosCastService : Service() {
                     )
                     .addCustomAction(
                         PlaybackStateCompat.CustomAction.Builder(
-                            ACTION_TOGGLE_SHUFFLE, I18n.t(Str.MODE_SHUFFLE), R.drawable.ic_shuffle
+                            ACTION_TOGGLE_SHUFFLE,
+                            I18n.t(Str.MODE_SHUFFLE),
+                            if (AppState.shuffle.value) R.drawable.ic_shuffle_on else R.drawable.ic_shuffle
                         ).build()
                     )
                     .addCustomAction(
                         PlaybackStateCompat.CustomAction.Builder(
-                            ACTION_TOGGLE_REPEAT, I18n.t(Str.MODE_REPEAT_ALL), R.drawable.ic_repeat
+                            ACTION_TOGGLE_REPEAT,
+                            I18n.t(
+                                if (AppState.repeatMode.value == RepeatMode.ONE) Str.MODE_REPEAT_ONE
+                                else Str.MODE_REPEAT_ALL
+                            ),
+                            if (AppState.repeatMode.value == RepeatMode.ONE) R.drawable.ic_repeat_one
+                            else R.drawable.ic_repeat
                         ).build()
                     )
                     .setState(state, AppState.positionSec.value * 1000L, 1f)
@@ -1424,7 +1471,7 @@ class SonosCastService : Service() {
                 }
             }
             pausedAtSec = AppState.positionSec.value.toInt()
-            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+            syncPlaybackStateToDevices()
             updateNotification()
             cancelAutoAdvance()
         }
@@ -1648,7 +1695,7 @@ class SonosCastService : Service() {
             nativeQueueActive = false
             lastQueueTrack = 0
             cancelAutoAdvance()
-            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+            syncPlaybackStateToDevices()
             updateNotification()
         } else if (ours && AppState.externalSource.value) {
             LogBus.i("音箱已回到 ZONOZ 的串流")
@@ -1662,7 +1709,7 @@ class SonosCastService : Service() {
             // 否则播放键会显示成暂停图标、进度条继续走（1.1.6 用户实测）。
             if (AppState.deviceStatus.value[device.key] != DeviceStatus.PAUSED) {
                 AppState.setStatus(device.key, DeviceStatus.PAUSED)
-                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                syncPlaybackStateToDevices()
                 updateNotification()
             }
             return
@@ -1676,7 +1723,7 @@ class SonosCastService : Service() {
                     LogBus.i("音箱已暂停（机身按键 / Sonos App），同步界面状态")
                     AppState.setStatus(device.key, DeviceStatus.PAUSED)
                     cancelAutoAdvance()
-                    updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                    syncPlaybackStateToDevices()
                     updateNotification()
                 }
                 lastTransportState = state
@@ -1747,7 +1794,8 @@ class SonosCastService : Service() {
      * 只能靠 GetPositionInfo 里的 `<Track>` 变化发现，再回头更新界面与通知。
      */
     private suspend fun syncQueueTrack(device: SonosDevice) {
-        if (!nativeQueueActive) return
+        // 不再用 nativeQueueActive 当门禁：单曲推送时也要按 TrackURI 认歌，
+        // 否则媒体控件切模式降级后界面序号不再跟随（实测）。
         // 正在推歌时不要回写序号：会和用户刚点的那首抢指针
         if (AppState.busy.value) return
         // 刚推完的一小段时间内也别跟随：音箱切流有延迟，

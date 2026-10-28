@@ -226,7 +226,8 @@ fun PlayerScreen(
             Spacer(Modifier.height(10.dp))
 
             EntryRow(
-                queueCount = queue.size,
+                // 单曲循环时清单一栏按 1 显示，与清单页实际条目数保持一致
+                queueCount = if (repeatMode == com.sonoscast.local.core.RepeatMode.ONE) 1 else queue.size,
                 libraryCount = tracks.size,
                 onOpenQueue = onOpenQueue,
                 onOpenLibrary = onOpenLibrary

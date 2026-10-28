@@ -305,7 +305,8 @@ object AppState {
             val rest = source.filter { it.id != current.id }.shuffled()
             return listOf(current) + rest
         }
-        if (repeatMode.value == RepeatMode.ONE) return listOf(current)
+        // 单曲循环保留完整清单：音箱用 REPEAT_ONE 执行；
+        // 收敛成 1 首会让媒体控件切模式时退回单曲推送（实测）。
         return source
     }
 

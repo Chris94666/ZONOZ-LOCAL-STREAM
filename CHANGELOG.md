@@ -11,6 +11,29 @@ ZONOZ local stream —— 把手机本地音乐通过局域网直接推给 Sonos
 
 ---
 
+## v1.1.8 — 2026-10-28
+
+### 中文
+- **循环切换不再打断播放**：列表/单曲循环只发一次 `SetPlayMode`，不再清空重建队列
+  （以前每按一次会中断 0.5–2 秒）。
+- **媒体控件状态跟随真实播放**：切随机/循环后，通知栏进度继续走、播放键不再误显示为"暂停"。
+- **媒体控件图标反馈**：随机开启时图标变为"方形框内的随机箭头"；循环在"列表/单曲"两套图标与文案间切换。
+- **单曲循环的清单收敛**：清单页只显示当前 1 首，入口数字同步为 `1 首`；
+  内部队列仍保留全部曲目，切随机/重建不受影响。
+- 修复单曲推送（降级模式）下界面序号不再跟随音箱的问题：改按 `TrackURI` 的 fileId 认歌。
+
+### English
+- Repeat toggling no longer interrupts playback: it only sends `SetPlayMode` instead of
+  clearing and rebuilding the queue.
+- Media-control state follows the real transport state again (progress keeps moving, no false "paused").
+- Media-control icons now show state: shuffle uses a framed-arrow icon when enabled; repeat
+  switches between list/one icons and labels.
+- In single-repeat, the queue screen shows just the current track and the entry count matches (1);
+  the internal queue keeps every track so shuffle/rebuild still work.
+- Fixed the UI losing track of the current song in single-push fallback mode (map by `TrackURI` fileId).
+
+---
+
 ## v1.1.7 — 2026-10-28
 
 ### 中文

@@ -56,11 +56,18 @@ fun QueueScreen(
     vm: PlayerViewModel,
     onBack: () -> Unit
 ) {
-    val queue by vm.queue.collectAsStateWithLifecycle()
+    val fullQueue by vm.queue.collectAsStateWithLifecycle()
     val queueIndex by vm.queueIndex.collectAsStateWithLifecycle()
     val current by vm.currentTrack.collectAsStateWithLifecycle()
     val shuffle by vm.shuffle.collectAsStateWithLifecycle()
     val repeatMode by vm.repeatMode.collectAsStateWithLifecycle()
+    // 单曲循环：内部清单仍保留全部（否则切随机/重建会拿不到队列），
+    // 但界面只展示当前这一首，避免"清单说 71 首、实际只放 1 首"。
+    val queue = if (repeatMode == RepeatMode.ONE && fullQueue.isNotEmpty()) {
+        listOf(fullQueue[queueIndex.coerceIn(0, fullQueue.lastIndex)])
+    } else {
+        fullQueue
+    }
 
     val listState = rememberLazyListState()
 
