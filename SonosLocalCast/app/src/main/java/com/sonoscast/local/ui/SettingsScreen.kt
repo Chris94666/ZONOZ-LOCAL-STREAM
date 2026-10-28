@@ -119,6 +119,7 @@ fun SettingsScreen(
 
     var langMenuOpen by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
+    var showLicense by remember { mutableStateOf(false) }
     var folderMenuOpen by remember { mutableStateOf(false) }
     var fontMenuOpen by remember { mutableStateOf(false) }
 
@@ -280,7 +281,17 @@ fun SettingsScreen(
                 }
             }
 
-            // ④ 调试（三级页入口；后台保活等诊断项都在里面）
+            // ④ 开源许可（本项目 MIT + 第三方组件）
+            GlassCard(Modifier.fillMaxWidth()) {
+                SettingsRow(
+                    icon = Icons.Rounded.Info,
+                    title = str(Str.LICENSE),
+                    subtitle = str(Str.LICENSE_INTRO),
+                    onClick = { showLicense = true }
+                )
+            }
+
+            // ⑤ 调试（三级页入口；后台保活等诊断项都在里面）
             GlassCard(Modifier.fillMaxWidth()) {
                 SettingsRow(
                     icon = Icons.Rounded.BugReport,
@@ -295,6 +306,10 @@ fun SettingsScreen(
 
     if (showAbout) {
         AboutDialog(onDismiss = { showAbout = false })
+    }
+
+    if (showLicense) {
+        LicenseDialog(onDismiss = { showLicense = false })
     }
 }
 

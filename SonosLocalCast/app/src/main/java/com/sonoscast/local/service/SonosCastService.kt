@@ -86,6 +86,7 @@ class SonosCastService : Service() {
     private var foregroundStarted = false
     private var progressJob: Job? = null
     private var mediaSession: MediaSessionCompat? = null
+    private var pausedAtSec = 0
     private var lastTransportState: String? = null
 
     /** 本地续播计时器（进程活着时最可靠的第一道） */
@@ -458,7 +459,7 @@ class SonosCastService : Service() {
 
     // ------------------------------------------------------------------ 推送
 
-    private fun castCurrent() {
+    private fun castCurrent(resumeAtSec: Int = 0) {
         val item = MediaRegistry.current.value
         if (item == null) {
             AppState.hint.value = Hint(Str.PICK_SONG)
@@ -478,9 +479,18 @@ class SonosCastService : Service() {
             // 结果只有"上一首/下一首"会建队列，用户点歌时永远是单曲推送（1.0.2 的漏改）。
             // 序号必须取"用户点的那首"，不能直接用 queueIndex：
             // 轮询随时可能在 cast 之前把它改成音箱当前那首。
-            if (castNativeQueue(targets, AppState.takePendingQueueIndex())) return@launch
+            if (castNativeQueue(targets, AppState.takePendingQueueIndex(), resumeAtSec = resumeAtSec)) {
+                return@launch
+            }
             nativeQueueActive = false
             performCast(item, targets)
+            // 退回单曲推送时同样要补回播放位置，否则"从 Sonos App 收回来的歌"会从头播
+            if (resumeAtSec > 0) {
+                targets.forEach { device ->
+                    runCatching { soap.seek(device, resumeAtSec.toLong()) }
+                }
+                LogBus.i("单曲推送后恢复到 ${resumeAtSec}s")
+            }
         }
     }
 
@@ -1173,6 +1183,7 @@ class SonosCastService : Service() {
      */
     private fun reconcileQueueIfNeeded(device: SonosDevice) {
         if (!shouldUseQueue()) return
+        if (AppState.externalSource.value) return   // 音箱在放别人的内容，别抢
         if (AppState.busy.value) return
         val revision = AppState.queueRevision
         if (revision == syncedRevision) {
@@ -1201,6 +1212,7 @@ class SonosCastService : Service() {
      * 与其等用户发现"界面和声音不一致"，不如这里直接重建并报警。
      */
     private suspend fun auditQueue(device: SonosDevice) {
+        if (AppState.externalSource.value) return   // 同上
         if (!shouldUseQueue()) return
         if (AppState.busy.value) return
         val expected = AppState.queue.value.size
@@ -1216,6 +1228,12 @@ class SonosCastService : Service() {
     }
 
     private fun recastIfQueueActive(reason: String) {
+        // 唯一重建入口：先确认音箱上放的还是我们的 /stream/。
+        // 否则"接管瞬间的那一次对账"仍会把 Sonos App 的播放顶掉（1.1.6 实测残留）。
+        if (AppState.externalSource.value) {
+            LogBus.d("recast（$reason）：音箱在放其他来源，跳过")
+            return
+        }
         // 注意：这里**不能**用 nativeQueueActive 当门禁。
         // 上一次推送失败会把该标志置 false，于是"切回列表循环"时永远不重建，
         // 音箱就一直停在 1 首的单曲队列里（1.1.2 回归脚本第 6 步抓到的 bug）。
@@ -1287,6 +1305,47 @@ class SonosCastService : Service() {
                 override fun onStop() = stopAll()
                 override fun onSkipToNext() = playRelative(1)
                 override fun onSkipToPrevious() = playRelative(-1)
+
+                override fun onCustomAction(action: String?, extras: android.os.Bundle?) {
+                    when (action) {
+                        ACTION_TOGGLE_SHUFFLE -> {
+                            val on = !AppState.shuffle.value
+                            LogBus.i("媒体控件切换随机：${if (on) "开" else "关"}")
+                            AppState.setShuffle(on)
+                            recastIfQueueActive("媒体控件随机")
+                            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                        }
+                        ACTION_TOGGLE_REPEAT -> {
+                            val one = AppState.repeatMode.value != RepeatMode.ONE
+                            LogBus.i("媒体控件切换循环：${if (one) "单曲" else "列表"}")
+                            AppState.setRepeatMode(if (one) RepeatMode.ONE else RepeatMode.ALL)
+                            recastIfQueueActive("媒体控件循环")
+                            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                        }
+                    }
+                }
+
+                // 通知栏 / 锁屏 / 耳机按键上的随机与循环（Android 13+ 会渲染这两个按钮）
+                override fun onSetShuffleMode(shuffleMode: Int) {
+                    val on = shuffleMode != PlaybackStateCompat.SHUFFLE_MODE_NONE
+                    if (on != AppState.shuffle.value) {
+                        LogBus.i("通知栏切换随机：${if (on) "开" else "关"}")
+                        AppState.setShuffle(on)
+                        recastIfQueueActive("通知栏随机")
+                        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                    }
+                }
+
+                override fun onSetRepeatMode(repeatMode: Int) {
+                    val one = repeatMode == PlaybackStateCompat.REPEAT_MODE_ONE
+                    val next = if (one) RepeatMode.ONE else RepeatMode.ALL
+                    if (next != AppState.repeatMode.value) {
+                        LogBus.i("通知栏切换循环：${if (one) "单曲" else "列表"}")
+                        AppState.setRepeatMode(next)
+                        recastIfQueueActive("通知栏循环")
+                        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                    }
+                }
             })
             isActive = true
         }
@@ -1314,10 +1373,31 @@ class SonosCastService : Service() {
                             PlaybackStateCompat.ACTION_PLAY_PAUSE or
                             PlaybackStateCompat.ACTION_STOP or
                             PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+                            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                            PlaybackStateCompat.ACTION_SET_SHUFFLE_MODE or
+                            PlaybackStateCompat.ACTION_SET_REPEAT_MODE
+                    )
+                    .addCustomAction(
+                        PlaybackStateCompat.CustomAction.Builder(
+                            ACTION_TOGGLE_SHUFFLE, I18n.t(Str.MODE_SHUFFLE), R.drawable.ic_shuffle
+                        ).build()
+                    )
+                    .addCustomAction(
+                        PlaybackStateCompat.CustomAction.Builder(
+                            ACTION_TOGGLE_REPEAT, I18n.t(Str.MODE_REPEAT_ALL), R.drawable.ic_repeat
+                        ).build()
                     )
                     .setState(state, AppState.positionSec.value * 1000L, 1f)
                     .build()
+            )
+            // 系统媒体控件据此点亮「随机 / 循环」按钮
+            session.setShuffleMode(
+                if (AppState.shuffle.value) PlaybackStateCompat.SHUFFLE_MODE_ALL
+                else PlaybackStateCompat.SHUFFLE_MODE_NONE
+            )
+            session.setRepeatMode(
+                if (AppState.repeatMode.value == RepeatMode.ONE) PlaybackStateCompat.REPEAT_MODE_ONE
+                else PlaybackStateCompat.REPEAT_MODE_ALL
             )
         }
     }
@@ -1343,6 +1423,7 @@ class SonosCastService : Service() {
                     }
                 }
             }
+            pausedAtSec = AppState.positionSec.value.toInt()
             updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
             updateNotification()
             cancelAutoAdvance()
@@ -1351,6 +1432,13 @@ class SonosCastService : Service() {
 
     private fun resumeAll() {
         scope.launch {
+            if (AppState.externalSource.value) {
+                LogBus.i("音箱在放其他来源，点播放 → 交还给 ZONOZ（从暂停处继续）")
+                AppState.externalSource.value = false
+                // 收到哪儿就从哪儿接着放：位置是接管那一刻冻结的 AppState.positionSec
+                castCurrent(resumeAtSec = if (pausedAtSec > 0) pausedAtSec else AppState.positionSec.value.toInt())
+                return@launch
+            }
             val targets = AppState.controlTargets()
             if (targets.isEmpty()) return@launch
             targets.forEach { device ->
@@ -1495,9 +1583,14 @@ class SonosCastService : Service() {
                 if (active != null) {
                     val sampled = tick % PROGRESS_SAMPLE_EVERY_TICKS == 0
                     if (sampled) {
-                        runCatching { soap.getPositionInfo(active) }.getOrNull()?.let { (position, duration) ->
-                            AppState.positionSec.value = position
-                            if (duration > 0L) AppState.durationSec.value = duration
+                        // 0) 归属必须第一个判：音箱可能已经被 Sonos App 抢走。
+                        //    抢走之后**不能**再读别人的进度，否则界面进度条会跟着别人的歌走。
+                        refreshOwnership(active)
+                        if (!AppState.externalSource.value) {
+                            runCatching { soap.getPositionInfo(active) }.getOrNull()?.let { (position, duration) ->
+                                AppState.positionSec.value = position
+                                if (duration > 0L) AppState.durationSec.value = duration
+                            }
                         }
                         // 机身按键切歌 / 暂停 / 继续，都只能靠轮询发现
                         syncQueueTrack(active)
@@ -1511,7 +1604,9 @@ class SonosCastService : Service() {
                         if (tick % (PROGRESS_SAMPLE_EVERY_TICKS * VOLUME_POLL_EVERY_SAMPLES) == 0) {
                             syncVolume(active)
                         }
-                    } else if (AppState.deviceStatus.value[active.key] == DeviceStatus.PLAYING) {
+                    } else if (!AppState.externalSource.value &&
+                        AppState.deviceStatus.value[active.key] == DeviceStatus.PLAYING
+                    ) {
                         // 两次采样之间的本地推进：**只在真的在播时**做。
                         // 暂停时继续插值就会变成 1:27↔1:28 反复横跳（1.0.1 的现象）。
                         val next = AppState.positionSec.value + 1
@@ -1536,7 +1631,42 @@ class SonosCastService : Service() {
      * 早期版本只更新了 MediaSession、没更新 `AppState.deviceStatus`，
      * 于是"音箱暂停了，手机上的按钮还是播放态、进度条还在 1:27↔1:28 插值"。
      */
+    /**
+     * 归属检查：音箱当前放的还是不是我们的 /stream/。
+     *
+     * Sonos App 抢走音箱后，TrackURI 会变成它自己的内容。这时必须**主动交还控制权**，
+     * 否则下一轮对账 / 自检 / 续播会把音箱抢回来——用户看到的就是
+     * "Sonos App 播一会儿，音乐突然又跳回 ZONOZ"（1.1.6 实测反馈）。
+     */
+    private suspend fun refreshOwnership(device: SonosDevice) {
+        val uri = runCatching { soap.getPlaybackTrackUri(device) }.getOrNull()
+        if (uri.isNullOrBlank()) return          // 切流中读不到，下一轮再说
+        val ours = uri.contains("/stream/")
+        if (!ours && !AppState.externalSource.value) {
+            LogBus.i("音箱已被其他来源占用（Sonos App 等），ZONOZ 交还控制权")
+            AppState.externalSource.value = true
+            nativeQueueActive = false
+            lastQueueTrack = 0
+            cancelAutoAdvance()
+            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+            updateNotification()
+        } else if (ours && AppState.externalSource.value) {
+            LogBus.i("音箱已回到 ZONOZ 的串流")
+            AppState.externalSource.value = false
+        }
+    }
+
     private suspend fun syncTransportState(device: SonosDevice) {
+        if (AppState.externalSource.value) {
+            // 音箱在放别人的内容：界面必须按"没在放我们的歌"渲染，
+            // 否则播放键会显示成暂停图标、进度条继续走（1.1.6 用户实测）。
+            if (AppState.deviceStatus.value[device.key] != DeviceStatus.PAUSED) {
+                AppState.setStatus(device.key, DeviceStatus.PAUSED)
+                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+                updateNotification()
+            }
+            return
+        }
         val state = runCatching { soap.getTransportState(device) }.getOrNull() ?: return
         val current = AppState.deviceStatus.value[device.key]
 
@@ -1583,6 +1713,7 @@ class SonosCastService : Service() {
 
     /** 单曲推送模式下的 STOPPED 判定：区分"真的放完"与"抖动提前停止" */
     private fun handleEarlyStop(device: SonosDevice) {
+        if (AppState.externalSource.value) return   // 是 Sonos App 换了源，不是我们抖动
         val sinceAdvance = SystemClock.elapsedRealtime() - lastAdvanceAt
         if (sinceAdvance < AUTO_ADVANCE_DEBOUNCE_MS) {
             LogBus.d("刚切过歌（${sinceAdvance}ms），忽略这次 STOPPED")
@@ -1640,6 +1771,9 @@ class SonosCastService : Service() {
         val indexByContent = playingId?.let { fid ->
             queue.indexOfFirst { MediaRegistry.fileIdFor(it.uri) == fid }
         } ?: -1
+
+        // 音箱放的不是我们的流（Sonos App 接管中）→ 既不改序号也不刷通知
+        if (playingId == null) return
 
         val index = if (indexByContent >= 0) indexByContent else indexByNo
         val track = queue.getOrNull(index) ?: return
@@ -1879,6 +2013,16 @@ class SonosCastService : Service() {
         val nextIntent = PendingIntent.getService(
             this, 3, Intent(this, SonosCastService::class.java).setAction(ACTION_NEXT), flags
         )
+        val shuffleIntent = PendingIntent.getService(
+            this, 5,
+            Intent(this, SonosCastService::class.java).setAction(ACTION_TOGGLE_SHUFFLE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val repeatIntent = PendingIntent.getService(
+            this, 6,
+            Intent(this, SonosCastService::class.java).setAction(ACTION_TOGGLE_REPEAT),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val exitIntent = PendingIntent.getService(
             this, 4, Intent(this, SonosCastService::class.java).setAction(ACTION_SHUTDOWN), flags
         )
@@ -1908,6 +2052,7 @@ class SonosCastService : Service() {
                     .setMediaSession(mediaSession?.sessionToken)
                     .setShowActionsInCompactView(0, 1, 2)
             )
+            .addAction(R.drawable.ic_shuffle, I18n.t(Str.MODE_SHUFFLE), shuffleIntent)
             .addAction(R.drawable.ic_notif_prev, I18n.t(Str.PREV), prevIntent)
             .addAction(
                 if (playing) R.drawable.ic_notif_pause else R.drawable.ic_notif_play,
@@ -1915,6 +2060,7 @@ class SonosCastService : Service() {
                 toggleIntent
             )
             .addAction(R.drawable.ic_notif_next, I18n.t(Str.NEXT), nextIntent)
+            .addAction(R.drawable.ic_repeat, I18n.t(Str.MODE_REPEAT_ALL), repeatIntent)
             .addAction(0, I18n.t(Str.EXIT), exitIntent)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
 
@@ -2088,6 +2234,7 @@ class SonosCastService : Service() {
         private const val ACTION_QUEUE_CHANGED = "com.sonoscast.local.action.QUEUE_CHANGED"
         private const val ACTION_SEEK = "com.sonoscast.local.action.SEEK"
         private const val ACTION_SET_VOLUME = "com.sonoscast.local.action.SET_VOLUME"
+    private const val ACTION_TOGGLE_REPEAT = "com.sonoscast.local.action.TOGGLE_REPEAT"
         private const val ACTION_ADD_MANUAL = "com.sonoscast.local.action.ADD_MANUAL"
         private const val ACTION_SHUTDOWN = "com.sonoscast.local.action.SHUTDOWN"
 

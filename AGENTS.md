@@ -16,7 +16,7 @@ App(NanoHTTPD :8080) ──SetAVTransportURI(URL)──► Sonos :1400 /AVTransp
         └────────── GET /stream/<fileId>（Range）───────┘
 ```
 
-包名 `com.sonoscast.local`，当前 **1.1.5 (versionCode 51)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ local stream，minSdk 26 / targetSdk 35。
+包名 `com.sonoscast.local`，当前 **1.1.7 (versionCode 53)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ local stream，minSdk 26 / targetSdk 35。
 
 ---
 

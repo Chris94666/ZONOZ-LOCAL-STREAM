@@ -86,6 +86,14 @@ object AppState {
     val repeatMode = MutableStateFlow(RepeatMode.ALL)
 
     /**
+     * 音箱当前播放的**不是**本 App 的串流（Sonos App、AirPlay 等来源）。
+     *
+     * 置 true 时，对账 / 自检 / 续播 / 队列回写全部让路：只观察，不抢控制权。
+     * 用户在本 App 里点播放会主动交还（见 resumeAll）。
+     */
+    val externalSource = MutableStateFlow(false)
+
+    /**
      * 开/关随机。
      *
      * 只改顺序、不丢循环设置：关掉随机后循环按钮会重新亮起，沿用上次的列表/单曲。

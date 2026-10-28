@@ -55,8 +55,8 @@ android {
         targetSdk = 35
         // 对外版本从 1.0 起算（首个开源版本）；versionCode 保持单调递增，
         // 这样老用户能正常覆盖安装。
-        versionCode = 51
-        versionName = "1.1.5"
+        versionCode = 53
+        versionName = "1.1.7"
     }
 
     buildTypes {

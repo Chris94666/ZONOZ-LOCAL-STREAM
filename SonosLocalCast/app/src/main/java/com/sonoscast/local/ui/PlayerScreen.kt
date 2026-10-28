@@ -124,6 +124,7 @@ fun PlayerScreen(
     val volume by vm.volume.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
     val hint by vm.hint.collectAsStateWithLifecycle()
+    val externalSource by com.sonoscast.local.core.AppState.externalSource.collectAsStateWithLifecycle()
     val tracks by vm.tracks.collectAsStateWithLifecycle()
     val shuffle by vm.shuffle.collectAsStateWithLifecycle()
     val repeatMode by vm.repeatMode.collectAsStateWithLifecycle()
@@ -189,6 +190,20 @@ fun PlayerScreen(
                 )
 
                 Spacer(Modifier.height(4.dp))
+
+                if (externalSource) {
+                    Text(
+                        str(Str.EXTERNAL_SOURCE),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 6.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.10f))
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
 
                 TransportRow(
                     playing = playing,
@@ -936,7 +951,11 @@ private fun EntryCard(
             Spacer(Modifier.width(8.dp))
             Text(
                 label,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.2.sp
+                ),
                 color = MaterialTheme.colorScheme.onBackground,
                 maxLines = 1
             )
@@ -944,7 +963,10 @@ private fun EntryCard(
         Spacer(Modifier.height(3.dp))
         Text(
             detail,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 12.sp,
+                letterSpacing = 0.2.sp
+            ),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             textAlign = TextAlign.Center

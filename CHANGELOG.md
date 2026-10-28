@@ -11,6 +11,52 @@ ZONOZ local stream —— 把手机本地音乐通过局域网直接推给 Sonos
 
 ---
 
+## v1.1.7 — 2026-10-28
+
+### 中文
+- **媒体控件：随机 / 循环按钮改用 custom action**（和 Sonos App 同一种实现）。
+  只声明 `ACTION_SET_SHUFFLE_MODE` 时澎湃 OS 的媒体卡片不渲染，改成
+  `PlaybackStateCompat.CustomAction` 后，通知栏与锁屏展开即可看到「随机播放 / 列表循环」。
+- **收回控制权时从暂停处继续**：`pauseAll()` 记下 `pausedAtSec`，ZONOZ 被 Sonos App
+  接管后再点播放，不再从头开始。
+- `recastIfQueueActive()` 增加归属守卫：接管瞬间不再有"对账重建"把别人的播放顶掉。
+- 桌面图标名称改为 **Zonoz**（界面内仍是 ZONOZ local stream）。
+
+### English
+- Media controls now expose shuffle/repeat as `PlaybackStateCompat.CustomAction`
+  (the same approach the Sonos app uses); plain shuffle/repeat action bits are not
+  rendered by HyperOS' media card.
+- Taking the speaker back resumes from the paused position (`pausedAtSec`).
+- `recastIfQueueActive()` is guarded by source ownership, so a takeover no longer
+  triggers a queue rebuild.
+- Launcher label is now **Zonoz** (in-app brand stays ZONOZ local stream).
+
+---
+
+## v1.1.6 — 2026-10-28
+
+### 中文
+- **修复：ZONOZ 与 Sonos App 抢音箱控制权。** 暂停后由 Sonos App 接管播放时，
+  ZONOZ 的"队列对账"会把音箱抢回来（重建队列）；现在每次采样先判断 TrackURI 是否还是自己的
+  串流，不是就主动交还控制权，对账 / 自检 / 续播 / 提前停止重试全部让路。
+- 修复：被接管期间界面会显示成清单里的另一首歌（按序号兜底）→ 现在不做任何映射。
+- 播放页：音源被接管时显示提示条；点播放 = 把音箱交还给 ZONOZ。
+- 通知栏 / 锁屏媒体控件新增**随机**与**列表/单曲循环**按钮（Android 13+）。
+- 设置页新增「开源许可」：MIT 全文 + 第三方组件许可清单。
+- 播放页底部两个入口的标题与数量字号统一（13sp / 12sp）。
+
+### English
+- **Fixed: ZONOZ no longer fights the Sonos app for the speaker.** While the Sonos app owns
+  playback, ZONOZ's queue reconciliation used to rebuild the queue and steal it back; it now
+  checks whether `TrackURI` is still our stream and hands control over otherwise.
+- Fixed the UI showing a different track while another source owned the speaker.
+- The player shows a hint when the source is taken over; pressing play hands it back.
+- Media controls gained shuffle and repeat buttons (Android 13+).
+- New "Open-source licenses" entry in Settings (MIT text + third-party licences).
+- Unified the type scale of the two entry cards at the bottom of the player.
+
+---
+
 ## v1.1.5 — 2026-10-27
 
 ### 中文

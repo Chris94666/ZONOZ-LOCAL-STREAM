@@ -139,7 +139,10 @@ internal val ZH: Map<Str, String> = mapOf(
     Str.KEEPALIVE to "后台保活",
     Str.KEEPALIVE_OK to "已排除电池优化 · 精确闹钟已授权",
     Str.KEEPALIVE_BATTERY to "未排除电池优化",
-    Str.KEEPALIVE_ALARM to "精确闹钟未授权"
+    Str.KEEPALIVE_ALARM to "精确闹钟未授权",
+            Str.EXTERNAL_SOURCE to "音箱正在播放其他来源（Sonos App）· 点播放可交还给 ZONOZ",
+            Str.LICENSE to "开源许可",
+            Str.LICENSE_INTRO to "本项目的 MIT 许可证，以及所用开源组件的许可说明。"
 )
 
 internal val ZH_TW: Map<Str, String> = mapOf(
@@ -273,7 +276,10 @@ internal val ZH_TW: Map<Str, String> = mapOf(
     Str.KEEPALIVE to "背景保活",
     Str.KEEPALIVE_OK to "已排除電池最佳化 · 精確鬧鐘已授權",
     Str.KEEPALIVE_BATTERY to "未排除電池最佳化",
-    Str.KEEPALIVE_ALARM to "精確鬧鐘未授權"
+    Str.KEEPALIVE_ALARM to "精確鬧鐘未授權",
+            Str.EXTERNAL_SOURCE to "喇叭正在播放其他來源（Sonos App）· 點播放可交還給 ZONOZ",
+            Str.LICENSE to "開源授權",
+            Str.LICENSE_INTRO to "本專案的 MIT 授權，以及所用開源元件的授權說明。"
 )
 
 internal val EN: Map<Str, String> = mapOf(
@@ -407,7 +413,10 @@ internal val EN: Map<Str, String> = mapOf(
     Str.KEEPALIVE to "Background keep-alive",
     Str.KEEPALIVE_OK to "Battery optimization off · exact alarms allowed",
     Str.KEEPALIVE_BATTERY to "Not excluded from battery optimization",
-    Str.KEEPALIVE_ALARM to "Exact alarms not allowed"
+    Str.KEEPALIVE_ALARM to "Exact alarms not allowed",
+            Str.EXTERNAL_SOURCE to "Speaker is playing another source (Sonos App) · tap play to take it back",
+            Str.LICENSE to "Open-source licenses",
+            Str.LICENSE_INTRO to "The MIT license of this project and the licenses of the libraries it uses."
 )
 
 internal val JA: Map<Str, String> = mapOf(
@@ -541,7 +550,10 @@ internal val JA: Map<Str, String> = mapOf(
     Str.KEEPALIVE to "バックグラウンド維持",
     Str.KEEPALIVE_OK to "バッテリー最適化対象外 · 正確なアラーム許可済み",
     Str.KEEPALIVE_BATTERY to "バッテリー最適化の対象外ではありません",
-    Str.KEEPALIVE_ALARM to "正確なアラームが未許可"
+    Str.KEEPALIVE_ALARM to "正確なアラームが未許可",
+            Str.EXTERNAL_SOURCE to "スピーカーは別のソースを再生中（Sonos App）· 再生で ZONOZ に戻す",
+            Str.LICENSE to "オープンソースライセンス",
+            Str.LICENSE_INTRO to "本プロジェクトの MIT ライセンスと、使用ライブラリのライセンス。"
 )
 
 internal val KO: Map<Str, String> = mapOf(
@@ -675,7 +687,10 @@ internal val KO: Map<Str, String> = mapOf(
     Str.KEEPALIVE to "백그라운드 유지",
     Str.KEEPALIVE_OK to "배터리 최적화 제외됨 · 정확한 알람 허용됨",
     Str.KEEPALIVE_BATTERY to "배터리 최적화에서 제외되지 않음",
-    Str.KEEPALIVE_ALARM to "정확한 알람이 허용되지 않음"
+    Str.KEEPALIVE_ALARM to "정확한 알람이 허용되지 않음",
+            Str.EXTERNAL_SOURCE to "스피커가 다른 소스를 재생 중(Sonos App) · 재생을 눌러 되돌리기",
+            Str.LICENSE to "오픈소스 라이선스",
+            Str.LICENSE_INTRO to "이 프로젝트의 MIT 라이선스와 사용 라이브러리 라이선스."
 )
 
 internal val RU: Map<Str, String> = mapOf(
@@ -809,7 +824,10 @@ internal val RU: Map<Str, String> = mapOf(
     Str.KEEPALIVE to "Работа в фоне",
     Str.KEEPALIVE_OK to "Оптимизация батареи отключена · точные будильники разрешены",
     Str.KEEPALIVE_BATTERY to "Не исключено из оптимизации батареи",
-    Str.KEEPALIVE_ALARM to "Точные будильники не разрешены"
+    Str.KEEPALIVE_ALARM to "Точные будильники не разрешены",
+            Str.EXTERNAL_SOURCE to "Колонка воспроизводит другой источник (Sonos App) · нажмите play",
+            Str.LICENSE to "Открытые лицензии",
+            Str.LICENSE_INTRO to "Лицензия MIT этого проекта и лицензии используемых библиотек."
 )
 
 internal val ES: Map<Str, String> = mapOf(
@@ -943,7 +961,10 @@ internal val ES: Map<Str, String> = mapOf(
     Str.KEEPALIVE to "Segundo plano",
     Str.KEEPALIVE_OK to "Optimización de batería desactivada · alarmas exactas permitidas",
     Str.KEEPALIVE_BATTERY to "Sin excluir de la optimización de batería",
-    Str.KEEPALIVE_ALARM to "Alarmas exactas no permitidas"
+    Str.KEEPALIVE_ALARM to "Alarmas exactas no permitidas",
+            Str.EXTERNAL_SOURCE to "El altavoz reproduce otra fuente (Sonos App) · pulsa play para recuperarlo",
+            Str.LICENSE to "Licencias de código abierto",
+            Str.LICENSE_INTRO to "La licencia MIT de este proyecto y las de las bibliotecas que usa."
 )
 
 internal val FR: Map<Str, String> = mapOf(
@@ -1077,5 +1098,8 @@ internal val FR: Map<Str, String> = mapOf(
     Str.KEEPALIVE to "Arrière-plan",
     Str.KEEPALIVE_OK to "Optimisation de batterie désactivée · alarmes exactes autorisées",
     Str.KEEPALIVE_BATTERY to "Non exclu de l'optimisation de batterie",
-    Str.KEEPALIVE_ALARM to "Alarmes exactes non autorisées"
+    Str.KEEPALIVE_ALARM to "Alarmes exactes non autorisées",
+            Str.EXTERNAL_SOURCE to "L'enceinte lit une autre source (Sonos App) · appuyez sur play",
+            Str.LICENSE to "Licences open source",
+            Str.LICENSE_INTRO to "La licence MIT de ce projet et celles des bibliothèques utilisées."
 )
