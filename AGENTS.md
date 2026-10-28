@@ -1,5 +1,18 @@
 # ZONOZ local stream · 开发交接说明（先读这个）
 
+> **改任何播放链路代码前的强制流程（不得跳过）**
+>
+> 1. 先在 `SonosLocalCast/` 构建并装机：`.\build.ps1` → `.\install.ps1`
+> 2. 再跑回归：`cd deploy; python regress_queue.py`，**七步全过**才允许继续改
+> 3. 判据三条：`界面 fileId == 音箱 TrackURI fileId`、`NrTracks == 清单长度`、
+>    第 3–6 步"当前曲的 fileId 前后必须一致"
+> 4. 任何一步失败：先修到 7/7，再动新需求；日志证据贴进提交说明
+>
+> 原因：本项目最贵的教训是"界面与声音不一致"（点 A 播 B、进度错、错歌）。
+> `regress_queue.py` 是唯一能在 3 分钟内证伪这条的脚本，跳过它等于盲改。
+> 详见 §24.5。
+
+
 工程本体在 `SonosLocalCast/`。本文只写「怎么跑、怎么改、哪些坑已经踩过」，协议细节见
 `SonosLocalCast/README.md`，历史决策见 `.workbuddy/memory/`。
 
@@ -87,18 +100,18 @@ Copy-Item "$env:TEMP\s1.png" "deploy\shots\p1.png"
 
 ## 6. 实测到的家庭环境
 
-- 手机：Redmi K80 Pro = `Redmi K80 Pro`（Android 16 / API 36），之前 IP `192.168.1.5`
-- 电脑：`192.168.1.10`
+- 手机：Redmi K80 Pro = `24122RKC7C`（Android 16 / API 36），之前 IP `192.168.124.5`
+- 电脑：`192.168.124.2`
 - 音箱：**客厅一对 Play:1 立体声配对**（S2，固件 86.10-81100）
-  - `.4` = `RINCON_XXXXXXXXXXXXXXXXXX` = **主箱 / RF / Coordinator**
-  - `.3` = `RINCON_YYYYYYYYYYYYYYYYYY` = **从箱 / LF / Invisible=1**
+  - `.4` = `RINCON_347E5CCF347E01400` = **主箱 / RF / Coordinator**
+  - `.3` = `RINCON_949F3EF0020601400` = **从箱 / LF / Invisible=1**
   - 对从箱发 `SetAVTransportURI` 返回 Sonos 私有码 **1023**，属正常，不是故障
 
 验证音箱在线（电脑上直接发 SOAP，无需手机）：
 
 ```powershell
 # 每台都应返回 200 + ZoneGroupState
-curl.exe -s -X POST "http://192.168.1.4:1400/ZoneGroupTopology/Control" `
+curl.exe -s -X POST "http://192.168.124.4:1400/ZoneGroupTopology/Control" `
   -H "SOAPACTION: \"urn:schemas-upnp-org:service:ZoneGroupTopology:1#GetZoneGroupState\"" `
   -H "Content-Type: text/xml; charset=utf-8" `
   --data-binary '<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetZoneGroupState xmlns:u="urn:schemas-upnp-org:service:ZoneGroupTopology:1"/></s:Body></s:Envelope>'
@@ -940,3 +953,55 @@ python regress_queue.py      # 七步引导，脚本自动检测操作并断言
 先查三类状态量：`nativeQueueActive`（降级标志）、`queueRevision`（清单是否已同步）、
 `autoAdvanceToken`（本地计时器是否还活着）。给每个提前返回加日志，
 再让用户做一次最小复现——比读代码猜快一个数量级。
+
+## 25. 1.1.6：与 Sonos App 抢控制权 / 通知栏随机循环 / 许可页
+
+### 25.1 症状与真凶
+
+用户实测：ZONOZ 暂停后，用 Sonos App 播一会儿，音乐会被 ZONOZ 抢回来；再在 Sonos App
+点播放又切回去，而 ZONOZ 界面显示的是另一首歌。
+
+真凶是 1.1.3 引入的"对账 + 自检"把门禁从 `nativeQueueActive` 改成了 `shouldUseQueue()`：
+只要 App 清单 ≥2 首，即使音箱上放的是 Sonos App 的内容，也会被当成"我们没同步好"而整队重建。
+于是 `RemoveAllTracksFromQueue` + 重新入队 → 直接顶掉别人的播放。
+
+界面显示错歌，是因为 `syncQueueTrack()` 在 `TrackURI` 认不出来时退回"按序号映射"，
+把清单第 N 首当成正在播的那首。
+
+### 25.2 修法：先判归属，再谈同步
+
+新增 `refreshOwnership(device)`，每 2 秒采样时第一步执行：
+
+| TrackURI | 处理 |
+| --- | --- |
+| 含 `/stream/` | 我们的流，清 `externalSource`，一切照旧 |
+| 其它 | 置 `AppState.externalSource = true`：`nativeQueueActive=false`、`cancelAutoAdvance()`、`lastQueueTrack=0`、状态改 PAUSED、刷新通知 |
+
+四处闸门同时加 `if (AppState.externalSource.value) return`：`reconcileQueueIfNeeded`、
+`auditQueue`、`handleEarlyStop`、以及 `syncQueueTrack` 里"认不出就按序号兜底"的分支。
+
+用户主动点播放 = 交还：`resumeAll()` 发现 `externalSource` 为真时不再发 `Play`（那会继续放别人的歌），
+而是 `castCurrent()` 重新推自己的串流。播放页会显示一条红色提示（`Str.EXTERNAL_SOURCE`）。
+
+真机验证（PC 直接发 SOAP 模拟抢占，把音箱 `SetAVTransportURI` 指向一个非 `/stream/` 的 URL）：
+- 日志出现一次 `音箱已被其他来源占用（Sonos App 等），ZONOZ 交还控制权`
+- 之后 18 秒内 **零** 次 `重建队列 / castNativeQueue / 已排续播`（旧行为会立刻重建）
+- 把 URI 设回原串流后，日志 `音箱已回到 ZONOZ 的串流`
+
+### 25.3 通知栏 / 锁屏的随机与循环
+
+`MediaSessionCompat` 支持 `setShuffleMode` / `setRepeatMode`，系统媒体控件在
+`PlaybackStateCompat.actions` 含 `ACTION_SET_SHUFFLE_MODE` / `ACTION_SET_REPEAT_MODE` 时
+才会渲染这两个按钮。
+
+- `updatePlaybackState()` 补上这两个 action，并按 `AppState.shuffle / repeatMode` 回写模式
+- `Callback.onSetShuffleMode` / `onSetRepeatMode` 落到 `AppState.setShuffle` / `setRepeatMode`，
+  随后 `recastIfQueueActive(...)` 让音箱的播放模式跟着变
+- 实测 `dumpsys media_session` 里本会话 `actions=2359863`，减去原有的
+  `PLAY|PAUSE|PLAY_PAUSE|STOP|NEXT|PREV`(567) 正好等于 `2^21 + 2^18`，两个新 action 已生效
+
+### 25.4 其余两处
+
+- 播放页底部两个入口：标题 13sp Medium、数量 12sp，字距统一 0.2sp（原来 12/11 混用）
+- 设置页新增「开源许可」（`ui/LicenseScreen.kt`）：MIT 全文 + NanoHTTPD(BSD-3) /
+  OkHttp(Apache-2.0) / AndroidX-Compose(Apache-2.0) / Kotlin(Apache-2.0) 清单
