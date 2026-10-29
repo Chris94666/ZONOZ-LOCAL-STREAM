@@ -52,6 +52,24 @@ object NetUtils {
             }
     }.getOrNull()
 
+    /** 当前默认网络是不是 VPN（科学上网 / 代理类 App 会插一条 tun 路由） */
+    fun isVpnActive(context: Context): Boolean = runCatching {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return false) ?: return false
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+    }.getOrDefault(false)
+
+    /** SSDP 组播必须钉在 Wi-Fi 网卡上，否则会从 VPN 的 tun 发出去 */
+    fun lanNetworkInterface(): NetworkInterface? = runCatching {
+        NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            .firstOrNull { nif ->
+                runCatching { nif.isUp && !nif.isLoopback }.getOrDefault(false) &&
+                    (nif.name?.startsWith("wlan") == true || nif.name?.startsWith("ap") == true ||
+                        nif.name?.startsWith("eth") == true) &&
+                    nif.inetAddresses.toList().any { it is Inet4Address && !it.isLoopbackAddress }
+            }
+    }.getOrNull()
+
     fun isWifiConnected(context: Context): Boolean = runCatching {
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
         val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return false) ?: return false

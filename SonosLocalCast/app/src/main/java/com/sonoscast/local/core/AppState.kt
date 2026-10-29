@@ -119,9 +119,16 @@ object AppState {
      * 界面上的清单数量必须和实际播放行为一致，否则会出现"显示 71 首但只播 1 首"。
      */
     fun setRepeatMode(mode: RepeatMode) {
+        // 只改播放模式，**不动清单**。
+        //
+        // 以前这里调 reorderQueue()：切成单曲循环会把内部清单收敛成 1 首、
+        // queueRevision++，服务端的"对账"看到版本变了就整队重建，还拿旧序号去 Seek
+        // → 音箱当场跳到另一首歌（回归第 6 步实测：当前曲被切走，NrTracks 变 0）。
+        //
+        // 单曲循环的"只显示一首"是纯 UI 行为（QueueScreen / PlayerScreen 各自过滤），
+        // 不需要也不应该改数据。
         repeatMode.value = mode
         shuffle.value = false
-        reorderQueue()
     }
 
     // ---------------------------------------------------------- 播放清单

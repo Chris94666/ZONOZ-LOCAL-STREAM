@@ -27,6 +27,7 @@ import com.sonoscast.local.MainActivity
 import com.sonoscast.local.R
 import com.sonoscast.local.SonosCastApp
 import com.sonoscast.local.core.AppState
+import com.sonoscast.local.core.AudioProbe
 import com.sonoscast.local.core.CoverLoader
 import com.sonoscast.local.core.DeviceStatus
 import com.sonoscast.local.core.Hint
@@ -88,6 +89,7 @@ class SonosCastService : Service() {
     private var mediaSession: MediaSessionCompat? = null
     private var pausedAtSec = 0
     private var soapFailStreak = 0
+    private var lastUrlHealAt = 0L
     private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var lastTransportState: String? = null
 
@@ -497,6 +499,7 @@ class SonosCastService : Service() {
     }
 
     private suspend fun performCast(item: MediaItem, targets: List<SonosDevice>) {
+        if (blockIfUnsupported(item.uri, item.displayName)) return
         AppState.busy.value = true
         cancelAutoAdvance()
         AppState.hint.value = null
@@ -813,13 +816,32 @@ class SonosCastService : Service() {
      *
      * @return false = 这条路走不通，调用方应退回单曲推送
      */
+
+    /**
+     * 推流前预检：超出音箱规格（>48 kHz，或 WAV/AIFF >16 bit）的文件直接拦下。
+     * 否则音箱会拉一段数据后自己跳过，用户看到的是"没声音 + 自动跳下一首"的假 bug。
+     */
+    private fun blockIfUnsupported(uri: android.net.Uri, label: String): Boolean {
+        val fmt = AudioProbe.probe(this, uri) ?: return false
+        if (!AudioProbe.isUnsupported(fmt)) return false
+        val desc = AudioProbe.describe(fmt)
+        LogBus.w("跳过不支持的格式：" + label + " · " + desc + "（音箱上限 48 kHz，WAV/AIFF 16 bit）")
+        AppState.hint.value = Hint(Str.UNSUPPORTED_FORMAT, listOf(desc))
+        return true
+    }
+
     private suspend fun castNativeQueue(
         targets: List<SonosDevice>,
         index: Int,
         attempt: Int = 0,
-        resumeAtSec: Int = 0
+        resumeAtSec: Int = 0,
+        autoPlay: Boolean = true
     ): Boolean {
         val queue = AppState.queue.value
+        // 先看这首能不能放（超出音箱规格就别推，免得被静默跳过）
+        queue.getOrNull(index)?.let { t ->
+            if (blockIfUnsupported(t.uri, t.title)) return true
+        }
         // 只有一首时没必要建队列（单曲循环还更简单），S1 老固件也不冒险
         if (queue.size < 2) {
             LogBus.d("播放清单只有 ${queue.size} 首，不建队列，走单曲推送")
@@ -925,11 +947,15 @@ class SonosCastService : Service() {
                     runCatching { soap.seek(speaker, resumeAtSec.toLong()) }
                     LogBus.d("重建后恢复到 ${resumeAtSec}s")
                 }
-                val play = soap.play(speaker)
-                if (play !is SoapResult.Success) {
-                    LogBus.w("队列播放失败：${describeSoapFailure(play)}，退回逐首推送")
-                    AppState.setStatus(speaker.key, DeviceStatus.IDLE)
-                    return false
+                if (autoPlay) {
+                    val play = soap.play(speaker)
+                    if (play !is SoapResult.Success) {
+                        LogBus.w("队列播放失败：${describeSoapFailure(play)}，退回逐首推送")
+                        AppState.setStatus(speaker.key, DeviceStatus.IDLE)
+                        return false
+                    }
+                } else {
+                    LogBus.d("保持暂停：只重建队列并定位到 ${resumeAtSec}s，不发送 Play")
                 }
                 // 终极自检：真的在读目标那一首的流吗？
                 // 序号对得上不代表歌对得上（顺序不一致时序号会正好落在别的歌上）。
@@ -956,7 +982,10 @@ class SonosCastService : Service() {
                     return false
                 }
                 if (matched) LogBus.d("声画一致：$targetFileId ✓")
-                AppState.setStatus(speaker.key, DeviceStatus.PLAYING)
+                AppState.setStatus(
+                    speaker.key,
+                    if (autoPlay) DeviceStatus.PLAYING else DeviceStatus.PAUSED
+                )
             }
 
             sonosQueueSignature = signature
@@ -1284,7 +1313,8 @@ class SonosCastService : Service() {
             LogBus.d("$reason：没有当前曲目，跳过重建")
             return
         }
-        val targets = AppState.selectedDevices()
+        // 传输出命令只发主箱：从箱回 1023，且会让状态闪"失败"
+        val targets = AppState.selectedDevices().filterNot { it.isSatellite }
         if (targets.isEmpty()) {
             LogBus.d("$reason：没有选中音箱，跳过重建")
             return
@@ -1297,7 +1327,7 @@ class SonosCastService : Service() {
         }
         scope.launch {
             LogBus.d("$reason → 按新顺序重建队列（第 ${index + 1} 首，${atSec}s）")
-            if (!castNativeQueue(targets, index, resumeAtSec = atSec)) {
+            if (!castNativeQueue(targets, index, resumeAtSec = atSec, autoPlay = wasPlaying)) {
                 nativeQueueActive = false
                 LogBus.w("$reason：重建队列失败，退回单曲推送（并恢复到 ${atSec}s）")
                 runCatching { performCast(item, targets) }
@@ -1317,6 +1347,10 @@ class SonosCastService : Service() {
                 targets.forEach { runCatching { soap.pause(it) } }
                 targets.forEach { AppState.setStatus(it.key, DeviceStatus.PAUSED) }
             }
+            // 重建会改写状态：最后统一按真实状态回写会话/通知，
+            // 否则锁屏会停在"正在播放"（1.1.9 实测）
+            syncPlaybackStateToDevices()
+            updateNotification()
         }
     }
 
@@ -1464,12 +1498,16 @@ class SonosCastService : Service() {
                 AppState.hint.value = Hint(Str.CONNECTION_LOST)
                 return@launch
             }
-            val targets = AppState.controlTargets()
+            // 从箱不接收传输命令（发过去只会回 1023），只对主箱发
+            val targets = AppState.controlTargets().filterNot { it.isSatellite }
             if (targets.isEmpty()) return@launch
             targets.forEach { device ->
                 when (val result = soap.pause(device)) {
                     is SoapResult.Success -> {
                         AppState.setStatus(device.key, DeviceStatus.PAUSED)
+                        if (AppState.deviceStatus.value[device.key] == DeviceStatus.PAUSED) {
+                            mirrorSatelliteStatus(DeviceStatus.PAUSED)
+                        }
                         LogBus.i("${device.displayName} 已暂停")
                     }
 
@@ -1499,12 +1537,14 @@ class SonosCastService : Service() {
                 castCurrent(resumeAtSec = if (pausedAtSec > 0) pausedAtSec else AppState.positionSec.value.toInt())
                 return@launch
             }
-            val targets = AppState.controlTargets()
+            // 从箱不接收传输命令（发过去只会回 1023），只对主箱发
+            val targets = AppState.controlTargets().filterNot { it.isSatellite }
             if (targets.isEmpty()) return@launch
             targets.forEach { device ->
                 when (val result = soap.play(device)) {
                     is SoapResult.Success -> {
                         AppState.setStatus(device.key, DeviceStatus.PLAYING)
+                        mirrorSatelliteStatus(DeviceStatus.PLAYING)
                         LogBus.i("${device.displayName} 已继续")
                     }
 
@@ -1526,7 +1566,8 @@ class SonosCastService : Service() {
     private fun stopAll() {
         cancelAutoAdvance()
         scope.launch {
-            val targets = AppState.controlTargets()
+            // 从箱不接收传输命令（发过去只会回 1023），只对主箱发
+            val targets = AppState.controlTargets().filterNot { it.isSatellite }
             targets.forEach { device ->
                 runCatching { soap.stop(device) }
                 AppState.setStatus(device.key, DeviceStatus.IDLE)
@@ -1546,7 +1587,8 @@ class SonosCastService : Service() {
         AppState.volume.value = value
         lastVolumeSetAt = SystemClock.elapsedRealtime()
         scope.launch {
-            val targets = AppState.controlTargets()
+            // 从箱不接收传输命令（发过去只会回 1023），只对主箱发
+            val targets = AppState.controlTargets().filterNot { it.isSatellite }
             val results = targets.map { device -> device to soap.setVolume(device, value) }
             val failed = results.count { it.second !is SoapResult.Success }
             if (failed == 0) {
@@ -1562,7 +1604,8 @@ class SonosCastService : Service() {
         val target = seconds.coerceAtLeast(0)
         AppState.positionSec.value = target.toLong()
         scope.launch {
-            val targets = AppState.controlTargets()
+            // 从箱不接收传输命令（发过去只会回 1023），只对主箱发
+            val targets = AppState.controlTargets().filterNot { it.isSatellite }
             if (targets.isEmpty()) {
                 LogBus.w("没有正在播放的设备，Seek 无效")
                 return@launch
@@ -1656,6 +1699,8 @@ class SonosCastService : Service() {
                         // 机身按键切歌 / 暂停 / 继续，都只能靠轮询发现
                         syncQueueTrack(active)
                         syncTransportState(active)
+                        // 从箱状态跟随主箱（它没有独立传输，不镜像就会停在旧的 PAUSED）
+                        AppState.deviceStatus.value[active.key]?.let { mirrorSatelliteStatus(it) }
                         // ① 对账：清单版本变了但没人通知音箱 → 这里兜底重建
                         reconcileQueueIfNeeded(active)
                         // ② 主动自检：音箱队列长度与 App 清单不一致 → 立刻重建并报警
@@ -1769,6 +1814,45 @@ class SonosCastService : Service() {
             LogBus.i("音箱已回到 ZONOZ 的串流")
             AppState.externalSource.value = false
         }
+        if (ours) healStaleStreamHost(uri)
+    }
+
+    /**
+     * 串流地址过期自救。
+     *
+     * 手机换了 IP（VPN 开关、Wi-Fi 重连、DHCP 续租都可能触发）之后，音箱队列里存的
+     * 还是 `http://<旧IP>:8080/stream/...`，它取流会失败 —— 表现是"能选设备、点歌没声音、
+     * 提示检查网络"，而 App 自己完全不知道。
+     *
+     * 这里每 2 秒采样时比对一次主机名，发现不是本机当前 IP 就按新地址重推整条队列。
+     * 15 秒限流，避免重推风暴。
+     */
+    private fun healStaleStreamHost(uri: String) {
+        val ip = AppState.localIp.value ?: return
+        val host = uri.substringAfter("://", "").substringBefore("/").substringBefore(":")
+        if (host.isEmpty() || host == ip) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastUrlHealAt < 15_000) return
+        lastUrlHealAt = now
+        LogBus.w("串流地址已过期：音箱里是 $host，本机现在是 $ip → 按新地址重推")
+        castCurrent(resumeAtSec = AppState.positionSec.value.toInt())
+    }
+
+
+    /**
+     * 立体声配对：从箱（isSatellite / Invisible）没有自己的传输状态，
+     * 它的真实状态永远等于主箱。之前只给主箱写状态，从箱就停在某次 pause 写下的
+     * PAUSED —— 于是"两个箱子都在响，输出设备列表里 LF 显示已暂停"（用户实测）。
+     */
+    private fun mirrorSatelliteStatus(status: DeviceStatus) {
+        AppState.devices.value
+            .filter { it.isSatellite }
+            .forEach { sat ->
+                if (AppState.deviceStatus.value[sat.key] != status) {
+                    AppState.setStatus(sat.key, status)
+                    LogBus.d("从箱 ${sat.displayName} 状态跟随主箱 → $status")
+                }
+            }
     }
 
     private suspend fun syncTransportState(device: SonosDevice) {

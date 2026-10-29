@@ -11,6 +11,41 @@ ZONOZ local stream —— 把手机本地音乐通过局域网直接推给 Sonos
 
 ---
 
+## v1.2 — 2026-10-29
+
+### 中文
+- **VPN / 代理兼容**：SSDP 组播改用 MulticastSocket 并钉在 Wi-Fi 网卡上，SOAP 出站 socket
+  绑定 wlan 源地址 —— 即使 VPN 抢走默认路由，局域网发现与推流仍走真实网卡。
+  扫不到设备且检测到 VPN 时给出明确提示（8 语言）。
+- **串流地址过期自愈**：手机换 IP（VPN 开关 / Wi-Fi 重连 / DHCP 续租）后，音箱里那条
+  `http://<旧IP>:8080/...` 会失效。现在每 2 秒比对主机名，不一致就按新地址重推（15s 限流）。
+- **单曲循环不再打乱清单**：切循环只改播放模式，不再重建/收缩内部清单
+  （旧行为会让服务端按错误序号重建，当场跳歌）。
+- **立体声配对修正**：从箱（LF）状态跟随主箱，不再显示"已暂停/失败"；暂停、继续、停止、
+  拖动、音量只对主箱发命令，消除 1023 错误闪烁。
+- **暂停状态重建队列不再出声**：锁屏切随机/循环时只重建并定位，不发 Play；重建结束统一
+  回写媒体会话，锁屏与 App 状态不再分叉。
+- **播放前格式预检**：解析 FLAC/WAV/AIFF 文件头，超过 48 kHz（或 24-bit WAV/AIFF）直接
+  拦截并提示，不再出现"没声音几秒后自动跳下一首"的假故障。
+- 回归脚本修复：扩展名不再写死 `.mp3`（`.ogg` 曾导致误判）。
+
+### English
+- VPN/proxy compatibility: SSDP multicast pinned to the Wi-Fi interface, SOAP sockets bound to
+  the WLAN source address, so discovery and streaming survive a VPN taking the default route;
+  plus an explicit hint when nothing is found while a VPN is active.
+- Stale stream-URL self-healing: after the phone's IP changes, the speaker's old
+  `http://<old-ip>:8080/...` URLs are detected and the queue is re-pushed with the new address.
+- Switching repeat mode no longer reshuffles/shrinks the internal queue (that used to trigger a
+  rebuild with a stale index and skip the current track).
+- Stereo-pair fixes: the satellite now mirrors the coordinator's state, and transport commands are
+  sent only to the coordinator, so LF no longer flashes "paused/failed".
+- Rebuilding while paused no longer sends Play, and the media session is refreshed when it finishes.
+- Format pre-check: FLAC/WAV/AIFF headers are parsed; anything above 48 kHz (or 24-bit WAV/AIFF)
+  is blocked with a clear message instead of being silently skipped by the speaker.
+- Regression script: extension is no longer hard-coded to `.mp3`.
+
+---
+
 ## v1.1.9 — 2026-10-29
 
 ### 中文

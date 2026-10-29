@@ -117,6 +117,12 @@ enum class Str {
     // 1.1.9：断连提示
     CONNECTION_LOST,
 
+    // 1.1.9：超出音箱规格的文件
+    UNSUPPORTED_FORMAT,
+
+    // 1.2：VPN / 代理提示
+    VPN_ACTIVE,
+
     // 1.1.9：隐私声明
     PRIVACY, PRIVACY_INTRO
 }

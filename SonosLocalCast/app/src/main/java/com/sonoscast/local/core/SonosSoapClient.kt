@@ -59,7 +59,36 @@ class SonosSoapClient {
 
     private val xmlMediaType = "text/xml; charset=utf-8".toMediaType()
 
+    /**
+     * 把 SOAP 的出站连接绑定到 Wi-Fi 的源地址。
+     *
+     * 开 VPN 时默认路由是 tun，192.168.x.x 的包也会被塞进隧道 → 音箱永远收不到，
+     * 表现为"设备列表能出来，但播放报网络错误 / 声音断续"。
+     * 绑定源地址后内核会从 wlan 发包，走回真正的局域网。
+     */
+    private object LanBoundSocketFactory : javax.net.SocketFactory() {
+        private fun bound(): java.net.Socket {
+            val s = java.net.Socket()
+            val ip = AppState.localIp.value
+            if (ip != null) {
+                runCatching { s.bind(java.net.InetSocketAddress(ip, 0)) }
+            }
+            return s
+        }
+
+        override fun createSocket(): java.net.Socket = bound()
+        override fun createSocket(host: String?, port: Int): java.net.Socket =
+            bound().apply { connect(java.net.InetSocketAddress(host, port)) }
+        override fun createSocket(host: String?, port: Int, localHost: java.net.InetAddress?, localPort: Int) =
+            bound()
+        override fun createSocket(host: java.net.InetAddress?, port: Int): java.net.Socket =
+            bound().apply { connect(java.net.InetSocketAddress(host, port)) }
+        override fun createSocket(host: java.net.InetAddress?, port: Int, localHost: java.net.InetAddress?, localPort: Int) =
+            bound()
+    }
+
     private val http: OkHttpClient = OkHttpClient.Builder()
+        .socketFactory(LanBoundSocketFactory)
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .writeTimeout(8, TimeUnit.SECONDS)

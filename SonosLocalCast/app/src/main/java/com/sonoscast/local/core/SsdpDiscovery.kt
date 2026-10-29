@@ -14,6 +14,7 @@ import org.xmlpull.v1.XmlPullParser
 import java.io.StringReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.MulticastSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketAddress
@@ -81,6 +82,10 @@ class SsdpDiscovery(private val context: Context) {
 
         if (headers.isEmpty()) {
             LogBus.w("SSDP 未收到任何响应（检查 Wi-Fi、AP 隔离、路由器是否屏蔽 239.255.255.250）")
+                if (NetUtils.isVpnActive(context)) {
+                    LogBus.w("当前有 VPN / 代理在跑，这是局域网发现的常见失败原因")
+                    AppState.hint.value = Hint(Str.VPN_ACTIVE)
+                }
             return@withContext emptyList()
         }
 
@@ -118,7 +123,10 @@ class SsdpDiscovery(private val context: Context) {
     // ---------------------------------------------------------------- socket
 
     private fun openSocket(): DatagramSocket? = runCatching {
-        val socket = DatagramSocket(null as SocketAddress?)
+        // 必须用 MulticastSocket 才能指定"从哪块网卡发组播"。
+        // 用普通 DatagramSocket 时，开了 VPN 的系统会按默认路由把 M-SEARCH 送进 tun，
+        // 结果就是"局域网里明明有音箱却一个都搜不到"（用户实测）。
+        val socket = MulticastSocket(null as SocketAddress?)
         socket.reuseAddress = true
         socket.broadcast = true
         socket.soTimeout = 500
@@ -129,6 +137,15 @@ class SsdpDiscovery(private val context: Context) {
             InetAddress.getByName("0.0.0.0")
         }
         socket.bind(InetSocketAddress(bindAddress, 0))
+        NetUtils.lanNetworkInterface()?.let { nif ->
+            runCatching {
+                socket.networkInterface = nif
+                socket.timeToLive = 4
+            }.onFailure { LogBus.w("SSDP 网卡绑定失败：${it.message}") }
+        }
+        if (NetUtils.isVpnActive(context)) {
+            LogBus.w("检测到 VPN：已把 SSDP 钉在 Wi-Fi 网卡上，若仍搜不到请关闭 VPN")
+        }
         socket
     }.getOrElse {
         LogBus.w("SSDP socket 创建失败：${it.message}")
