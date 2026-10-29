@@ -87,6 +87,8 @@ class SonosCastService : Service() {
     private var progressJob: Job? = null
     private var mediaSession: MediaSessionCompat? = null
     private var pausedAtSec = 0
+    private var soapFailStreak = 0
+    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var lastTransportState: String? = null
 
     /** 本地续播计时器（进程活着时最可靠的第一道） */
@@ -1434,7 +1436,12 @@ class SonosCastService : Service() {
                             else R.drawable.ic_repeat
                         ).build()
                     )
-                    .setState(state, AppState.positionSec.value * 1000L, 1f)
+                    // 暂停/停止时速度必须为 0，否则系统会一直外推进度条
+                    .setState(
+                        state,
+                        AppState.positionSec.value * 1000L,
+                        if (state == PlaybackStateCompat.STATE_PLAYING) 1f else 0f
+                    )
                     .build()
             )
             // 系统媒体控件据此点亮「随机 / 循环」按钮
@@ -1451,6 +1458,12 @@ class SonosCastService : Service() {
 
     private fun pauseAll() {
         scope.launch {
+            // 断连恢复后旧 socket 可能已死：先确保媒体服务可用，再让音箱播
+            if (!ensureServer()) {
+                LogBus.w("媒体服务不可用，先不发送播放指令")
+                AppState.hint.value = Hint(Str.CONNECTION_LOST)
+                return@launch
+            }
             val targets = AppState.controlTargets()
             if (targets.isEmpty()) return@launch
             targets.forEach { device ->
@@ -1617,6 +1630,7 @@ class SonosCastService : Service() {
      * 每次真实采样都会覆盖插值结果，所以不会累积漂移。
      */
     private fun startProgressPolling() {
+        ensureNetworkCallback()
         if (progressJob?.isActive == true) return
         progressJob = scope.launch {
             var tick = 0
@@ -1652,6 +1666,7 @@ class SonosCastService : Service() {
                             syncVolume(active)
                         }
                     } else if (!AppState.externalSource.value &&
+                        !AppState.connectionLost.value &&
                         AppState.deviceStatus.value[active.key] == DeviceStatus.PLAYING
                     ) {
                         // 两次采样之间的本地推进：**只在真的在播时**做。
@@ -1678,6 +1693,59 @@ class SonosCastService : Service() {
      * 早期版本只更新了 MediaSession、没更新 `AppState.deviceStatus`，
      * 于是"音箱暂停了，手机上的按钮还是播放态、进度条还在 1:27↔1:28 插值"。
      */
+    /**
+     * 断连：连续多次拿不到音箱状态（Wi-Fi 断开 / 换了网络 / 音箱离线）。
+     *
+     * 必须把界面与会话都降级成暂停，否则会出现"手机已经在蜂窝网络、
+     * 界面还显示正在播放、进度慢慢爬"的假象（用户实测）。
+     */
+    private fun markDisconnected() {
+        if (AppState.connectionLost.value) return
+        LogBus.w("与音箱失去联系（Wi-Fi 断开或音箱离线），界面转为暂停")
+        AppState.connectionLost.value = true
+        cancelAutoAdvance()
+        AppState.deviceStatus.value.keys.forEach { key ->
+            AppState.setStatus(key, DeviceStatus.PAUSED)
+        }
+        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED)
+        updateNotification()
+    }
+
+    private fun markReconnected() {
+        if (!AppState.connectionLost.value) return
+        LogBus.i("与音箱恢复联系")
+        AppState.connectionLost.value = false
+        AppState.hint.value = null
+    }
+
+    /** 注册默认网络回调：Wi-Fi 恢复时清断连态，并把媒体服务器标记为需重建 */
+    private fun ensureNetworkCallback() {
+        if (netCallback != null) return
+        runCatching {
+            val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return
+            val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    val caps = cm.getNetworkCapabilities(network)
+                    if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                        scope.launch {
+                            LogBus.i("Wi-Fi 已恢复，重建媒体服务器")
+                            ensureServer(force = true)
+                            soapFailStreak = 0
+                            markReconnected()
+                        }
+                    }
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    LogBus.w("默认网络断开")
+                    scope.launch { markDisconnected() }
+                }
+            }
+            cm.registerDefaultNetworkCallback(cb)
+            netCallback = cb
+        }.onFailure { LogBus.w("网络回调注册失败：" + it.message) }
+    }
+
     /**
      * 归属检查：音箱当前放的还是不是我们的 /stream/。
      *
@@ -1714,7 +1782,16 @@ class SonosCastService : Service() {
             }
             return
         }
-        val state = runCatching { soap.getTransportState(device) }.getOrNull() ?: return
+        val state = runCatching { soap.getTransportState(device) }.getOrNull()
+        if (state == null) {
+            soapFailStreak++
+            if (soapFailStreak >= 3) markDisconnected()
+            return
+        }
+        if (soapFailStreak > 0) {
+            soapFailStreak = 0
+            markReconnected()
+        }
         val current = AppState.deviceStatus.value[device.key]
 
         when (state) {

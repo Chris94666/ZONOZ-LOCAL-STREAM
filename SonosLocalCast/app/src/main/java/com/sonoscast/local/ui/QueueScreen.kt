@@ -1,7 +1,9 @@
 package com.sonoscast.local.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +26,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PlaylistPlay
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +38,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -61,6 +69,8 @@ fun QueueScreen(
     val current by vm.currentTrack.collectAsStateWithLifecycle()
     val shuffle by vm.shuffle.collectAsStateWithLifecycle()
     val repeatMode by vm.repeatMode.collectAsStateWithLifecycle()
+    // 清单页长按：弹出与曲库一致的「下一首播放 / 立即播放」
+    var menuTrack by remember { mutableStateOf<Track?>(null) }
     // 单曲循环：内部清单仍保留全部（否则切随机/重建会拿不到队列），
     // 但界面只展示当前这一首，避免"清单说 71 首、实际只放 1 首"。
     val queue = if (repeatMode == RepeatMode.ONE && fullQueue.isNotEmpty()) {
@@ -153,19 +163,48 @@ fun QueueScreen(
                     index = index,
                     track = track,
                     isCurrent = current?.id == track.id,
-                    onClick = { vm.playFromQueue(track) }
+                    onClick = { vm.playFromQueue(track) },
+                    onLongClick = { menuTrack = track }
+                )
+            }
+        }
+
+        // 长按菜单：插到当前曲之后，清单里会立刻出现在当前曲下方
+        menuTrack?.let { target ->
+            DropdownMenu(expanded = true, onDismissRequest = { menuTrack = null }) {
+                DropdownMenuItem(
+                    text = { Text(str(Str.PLAY_NEXT)) },
+                    leadingIcon = {
+                        Icon(Icons.Rounded.PlaylistPlay, contentDescription = null, modifier = Modifier.size(20.dp))
+                    },
+                    onClick = {
+                        menuTrack = null
+                        vm.playNext(target)
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(str(Str.PLAY_NOW)) },
+                    leadingIcon = {
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+                    },
+                    onClick = {
+                        menuTrack = null
+                        vm.playFromQueue(target)
+                    }
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QueueRow(
     index: Int,
     track: Track,
     isCurrent: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     val shape = RoundedCornerShape(14.dp)
     Row(
@@ -176,7 +215,7 @@ private fun QueueRow(
                 if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                 else Color.Transparent
             )
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 10.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

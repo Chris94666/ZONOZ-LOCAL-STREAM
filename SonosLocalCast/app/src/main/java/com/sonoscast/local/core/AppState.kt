@@ -93,6 +93,9 @@ object AppState {
      */
     val externalSource = MutableStateFlow(false)
 
+    /** 与音箱所在局域网失去联系（Wi-Fi 断开 / 换了网络 / 音箱离线） */
+    val connectionLost = MutableStateFlow(false)
+
     /**
      * 开/关随机。
      *

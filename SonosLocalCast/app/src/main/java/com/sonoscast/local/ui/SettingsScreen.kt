@@ -39,6 +39,7 @@ import androidx.compose.material.icons.rounded.FormatSize
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.AlertDialog
@@ -120,6 +121,7 @@ fun SettingsScreen(
     var langMenuOpen by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var showLicense by remember { mutableStateOf(false) }
+    var showPrivacy by remember { mutableStateOf(false) }
     var folderMenuOpen by remember { mutableStateOf(false) }
     var fontMenuOpen by remember { mutableStateOf(false) }
 
@@ -291,7 +293,17 @@ fun SettingsScreen(
                 )
             }
 
-            // ⑤ 调试（三级页入口；后台保活等诊断项都在里面）
+            // ⑤ 隐私声明（本站不联网、不收集，写清楚给上架用）
+            GlassCard(Modifier.fillMaxWidth()) {
+                SettingsRow(
+                    icon = Icons.Rounded.Lock,
+                    title = str(Str.PRIVACY),
+                    subtitle = str(Str.PRIVACY_INTRO),
+                    onClick = { showPrivacy = true }
+                )
+            }
+
+            // ⑥ 调试（三级页入口；后台保活等诊断项都在里面）
             GlassCard(Modifier.fillMaxWidth()) {
                 SettingsRow(
                     icon = Icons.Rounded.BugReport,
@@ -310,6 +322,10 @@ fun SettingsScreen(
 
     if (showLicense) {
         LicenseDialog(onDismiss = { showLicense = false })
+    }
+
+    if (showPrivacy) {
+        PrivacyDialog(onDismiss = { showPrivacy = false })
     }
 }
 

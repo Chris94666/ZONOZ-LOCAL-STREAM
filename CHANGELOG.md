@@ -11,6 +11,31 @@ ZONOZ local stream —— 把手机本地音乐通过局域网直接推给 Sonos
 
 ---
 
+## v1.1.9 — 2026-10-29
+
+### 中文
+- **断连感知**：连续 3 次（约 6 秒）拿不到音箱状态 → 判定"与音箱失去联系"，
+  界面与锁屏同时转为暂停、进度冻结、播放页弹红字提示；Wi-Fi 恢复后自动重建媒体服务器
+  并清除提示（不自动播放，等你点）。
+- **媒体会话速度修复**：暂停时 `speed=0`，锁屏/通知栏的进度条不再"假前进"。
+- 点播放前先自检媒体服务器：服务不可用就不发播放指令，避免"界面在走、音箱没声"。
+- **播放清单支持长按「下一首播放」**：实时队列，被插的歌立刻出现在当前曲下方。
+- **新增隐私声明**（设置 → 隐私声明，中英双语）+ 仓库根 `PRIVACY.md`。
+- 修复回归脚本把扩展名写死为 `.mp3` 导致的 `.ogg` 误判。
+
+### English
+- Connection-loss detection: three consecutive failed state reads put the UI and the
+  lock-screen session into pause, freeze the progress and show a red banner; when Wi-Fi
+  returns the media server is rebuilt automatically and the banner clears.
+- MediaSession now reports `speed = 0` while paused (the lock-screen progress no longer drifts).
+- Play requests verify the media server first, so the UI never "plays" silently.
+- Queue screen gained a long-press "play next" action; the inserted track appears right
+  below the current one.
+- New privacy statement in Settings (CN/EN) plus `PRIVACY.md` in the repo.
+- Fixed the regression script's hard-coded `.mp3` extension that mis-parsed `.ogg` URIs.
+
+---
+
 ## v1.1.8 — 2026-10-28
 
 ### 中文

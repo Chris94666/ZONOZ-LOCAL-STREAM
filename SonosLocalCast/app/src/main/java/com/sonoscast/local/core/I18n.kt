@@ -112,7 +112,13 @@ enum class Str {
     KEEPALIVE, KEEPALIVE_OK, KEEPALIVE_BATTERY, KEEPALIVE_ALARM,
 
     // 1.1.6 新增：其他来源占用提示 + 开源许可
-    EXTERNAL_SOURCE, LICENSE, LICENSE_INTRO
+    EXTERNAL_SOURCE, LICENSE, LICENSE_INTRO,
+
+    // 1.1.9：断连提示
+    CONNECTION_LOST,
+
+    // 1.1.9：隐私声明
+    PRIVACY, PRIVACY_INTRO
 }
 
 object I18n {

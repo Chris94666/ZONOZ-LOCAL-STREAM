@@ -125,6 +125,7 @@ fun PlayerScreen(
     val scanning by vm.scanning.collectAsStateWithLifecycle()
     val hint by vm.hint.collectAsStateWithLifecycle()
     val externalSource by com.sonoscast.local.core.AppState.externalSource.collectAsStateWithLifecycle()
+    val connectionLost by com.sonoscast.local.core.AppState.connectionLost.collectAsStateWithLifecycle()
     val tracks by vm.tracks.collectAsStateWithLifecycle()
     val shuffle by vm.shuffle.collectAsStateWithLifecycle()
     val repeatMode by vm.repeatMode.collectAsStateWithLifecycle()
@@ -191,9 +192,9 @@ fun PlayerScreen(
 
                 Spacer(Modifier.height(4.dp))
 
-                if (externalSource) {
+                if (externalSource || connectionLost) {
                     Text(
-                        str(Str.EXTERNAL_SOURCE),
+                        if (connectionLost) str(Str.CONNECTION_LOST) else str(Str.EXTERNAL_SOURCE),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier
