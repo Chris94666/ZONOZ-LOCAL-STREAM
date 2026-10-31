@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
@@ -60,6 +61,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -139,6 +142,10 @@ fun PlayerScreen(
             .background(Color.Black)
     ) {
         PlayerBackdrop(cover)
+
+        // 状态栏区域：叠一层从封面主色到透明的渐变（方案 C）。
+        // 只影响播放页；其它页面仍是纯黑 + 白图标。
+        StatusBarTint(cover)
 
         Column(
             Modifier
@@ -273,6 +280,29 @@ fun PlayerScreen(
 @Composable
 private fun hintText(hint: Hint): String =
     if (hint.args.isEmpty()) str(hint.key) else strf(hint.key, *hint.args.toTypedArray())
+
+
+/**
+ * 播放页顶栏渐变：取封面主色，压 35% 透明度铺在状态栏高度上。
+ * 纯黑背景 + 白色状态栏图标，有了这层色带后文字/图标的对比度明显提升。
+ */
+@Composable
+private fun StatusBarTint(cover: Bitmap?) {
+    val tint = remember(cover) { CoverPalette.of(cover) } ?: return
+    val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(topInset + 44.dp)
+            .background(
+                Brush.verticalGradient(
+                    0f to tint.copy(alpha = 0.38f),
+                    0.55f to tint.copy(alpha = 0.16f),
+                    1f to Color.Transparent
+                )
+            )
+    )
+}
 
 @Composable
 private fun PlayerBackdrop(cover: Bitmap?) {

@@ -90,6 +90,8 @@ class SonosCastService : Service() {
     private var pausedAtSec = 0
     private var soapFailStreak = 0
     private var lastUrlHealAt = 0L
+    private var lastPollInterval = -1L
+    private var lastSessionState = -1
     private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var lastTransportState: String? = null
 
@@ -1363,6 +1365,21 @@ class SonosCastService : Service() {
 
     // ------------------------------------------------------------ 媒体会话
 
+
+    /**
+     * MIUI 的锁屏媒体卡片会**缓存自定义动作的图标**，同一个 action id 即使换了图标也不重绘。
+     * 让 id 随状态变化（shuffle_on / shuffle_off、repeat_off/list/one），
+     * 系统就会当成"新按钮"重新取图标 —— 这是实测唯一不重启会话也能刷新的办法。
+     */
+    private fun shuffleActionId(): String =
+        if (AppState.shuffle.value) ACTION_TOGGLE_SHUFFLE + "_ON" else ACTION_TOGGLE_SHUFFLE + "_OFF"
+
+    private fun repeatActionId(): String = when {
+        AppState.shuffle.value -> ACTION_TOGGLE_REPEAT + "_OFF"
+        AppState.repeatMode.value == RepeatMode.ONE -> ACTION_TOGGLE_REPEAT + "_ONE"
+        else -> ACTION_TOGGLE_REPEAT + "_LIST"
+    }
+
     private fun initMediaSession() {
         if (mediaSession != null) return
         mediaSession = MediaSessionCompat(this, "ZonozLocalStream").apply {
@@ -1374,6 +1391,25 @@ class SonosCastService : Service() {
                 override fun onSkipToPrevious() = playRelative(-1)
 
                 override fun onCustomAction(action: String?, extras: android.os.Bundle?) {
+                    // 动作 id 带状态后缀（见 shuffleActionId/repeatActionId），这里按前缀分发
+                    if (action != null && action.startsWith(ACTION_TOGGLE_SHUFFLE)) {
+                        val on = !AppState.shuffle.value
+                        LogBus.i("媒体控件切换随机：${if (on) "开" else "关"}")
+                        AppState.setShuffle(on)
+                        recastIfQueueActive("媒体控件随机")
+                        syncPlaybackStateToDevices()
+                        updateNotification()
+                        return
+                    }
+                    if (action != null && action.startsWith(ACTION_TOGGLE_REPEAT)) {
+                        val one = AppState.repeatMode.value != RepeatMode.ONE
+                        LogBus.i("媒体控件切换循环：${if (one) "单曲" else "列表"}")
+                        AppState.setRepeatMode(if (one) RepeatMode.ONE else RepeatMode.ALL)
+                        applyPlayModeOnly("媒体控件循环")
+                        syncPlaybackStateToDevices()
+                        updateNotification()
+                        return
+                    }
                     when (action) {
                         ACTION_TOGGLE_SHUFFLE -> {
                             val on = !AppState.shuffle.value
@@ -1381,6 +1417,7 @@ class SonosCastService : Service() {
                             AppState.setShuffle(on)
                             recastIfQueueActive("媒体控件随机")
                             syncPlaybackStateToDevices()
+                            updateNotification()
                         }
                         ACTION_TOGGLE_REPEAT -> {
                             val one = AppState.repeatMode.value != RepeatMode.ONE
@@ -1388,6 +1425,7 @@ class SonosCastService : Service() {
                             AppState.setRepeatMode(if (one) RepeatMode.ONE else RepeatMode.ALL)
                             applyPlayModeOnly("媒体控件循环")
                             syncPlaybackStateToDevices()
+                            updateNotification()
                         }
                     }
                 }
@@ -1400,6 +1438,7 @@ class SonosCastService : Service() {
                         AppState.setShuffle(on)
                         recastIfQueueActive("通知栏随机")
                         syncPlaybackStateToDevices()
+                        updateNotification()
                     }
                 }
 
@@ -1411,6 +1450,7 @@ class SonosCastService : Service() {
                         AppState.setRepeatMode(next)
                         applyPlayModeOnly("通知栏循环")
                         syncPlaybackStateToDevices()
+                        updateNotification()
                     }
                 }
             })
@@ -1429,6 +1469,7 @@ class SonosCastService : Service() {
 
     private fun updatePlaybackState(state: Int) {
         val session = mediaSession ?: return
+        lastSessionState = state
         runCatching {
             val track = currentTrack()
             // 锁屏 / 通知媒体卡片显示的歌名、艺术家、时长都来自 MediaMetadata
@@ -1448,26 +1489,33 @@ class SonosCastService : Service() {
                             PlaybackStateCompat.ACTION_PLAY_PAUSE or
                             PlaybackStateCompat.ACTION_STOP or
                             PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
-                            PlaybackStateCompat.ACTION_SET_SHUFFLE_MODE or
-                            PlaybackStateCompat.ACTION_SET_REPEAT_MODE
+                            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
                     )
+                    // 通知栏/锁屏的两个按钮用「实心 = 开、空心 = 关」区分，
+                    // 且遵循 App 内的互斥逻辑：随机开时循环必须是"关"的样子。
                     .addCustomAction(
                         PlaybackStateCompat.CustomAction.Builder(
-                            ACTION_TOGGLE_SHUFFLE,
+                            shuffleActionId(),
                             I18n.t(Str.MODE_SHUFFLE),
-                            if (AppState.shuffle.value) R.drawable.ic_shuffle_on else R.drawable.ic_shuffle
+                            if (AppState.shuffle.value) R.drawable.ic_shuffle
+                            else R.drawable.ic_shuffle_dim
                         ).build()
                     )
                     .addCustomAction(
                         PlaybackStateCompat.CustomAction.Builder(
-                            ACTION_TOGGLE_REPEAT,
+                            repeatActionId(),
                             I18n.t(
-                                if (AppState.repeatMode.value == RepeatMode.ONE) Str.MODE_REPEAT_ONE
-                                else Str.MODE_REPEAT_ALL
+                                when {
+                                    AppState.shuffle.value -> Str.MODE_REPEAT_ALL
+                                    AppState.repeatMode.value == RepeatMode.ONE -> Str.MODE_REPEAT_ONE
+                                    else -> Str.MODE_REPEAT_ALL
+                                }
                             ),
-                            if (AppState.repeatMode.value == RepeatMode.ONE) R.drawable.ic_repeat_one
-                            else R.drawable.ic_repeat
+                            when {
+                                AppState.shuffle.value -> R.drawable.ic_repeat_dim
+                                AppState.repeatMode.value == RepeatMode.ONE -> R.drawable.ic_repeat_one
+                                else -> R.drawable.ic_repeat
+                            }
                         ).build()
                     )
                     // 暂停/停止时速度必须为 0，否则系统会一直外推进度条
@@ -1478,14 +1526,15 @@ class SonosCastService : Service() {
                     )
                     .build()
             )
-            // 系统媒体控件据此点亮「随机 / 循环」按钮
-            session.setShuffleMode(
-                if (AppState.shuffle.value) PlaybackStateCompat.SHUFFLE_MODE_ALL
-                else PlaybackStateCompat.SHUFFLE_MODE_NONE
-            )
-            session.setRepeatMode(
-                if (AppState.repeatMode.value == RepeatMode.ONE) PlaybackStateCompat.REPEAT_MODE_ONE
-                else PlaybackStateCompat.REPEAT_MODE_ALL
+            // 系统 shuffle/repeat 模式不再回写：MIUI 会据此画自己的按钮且不跟随状态，
+            // 统一由上面的自定义动作表达（实心=开、空心=关）。
+            LogBus.d(
+                "会话模式：shuffle=" + (if (AppState.shuffle.value) "ALL" else "NONE") +
+                    " repeat=" + (when {
+                        AppState.shuffle.value -> "NONE"
+                        AppState.repeatMode.value == RepeatMode.ONE -> "ONE"
+                        else -> "ALL"
+                    })
             )
         }
     }
@@ -1646,8 +1695,10 @@ class SonosCastService : Service() {
         if (foregroundStarted) return
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            // 只用 mediaPlayback：dataSync 在 Android 14+ 有 6 小时上限，
+            // 超时抛 ForegroundServiceDidNotStopInTimeException 把进程杀掉
+            // （10-31 12:48 的崩溃日志就是它）。
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
         } else {
             0
         }
@@ -1680,10 +1731,15 @@ class SonosCastService : Service() {
             while (isActive) {
                 // 正在播或**被机身按键暂停**的设备都算活跃：暂停后也要继续读状态，
                 // 否则机身再按一次播放，App 这边永远发现不了。
-                val active = AppState.coordinators().firstOrNull { device ->
+                val coordinators = AppState.coordinators()
+                // 先找"有播放状态"的主箱；找不到就**兜底盯第一个主箱**。
+                // 只按状态找的写法有个致命漏洞：设备重新发现后状态表可能是空的，
+                // active 变 null → 轮询直接停 → 音箱还在放，锁屏却永远停在旧进度
+                // （用户实测：App 0:50、锁屏 1:40）。
+                val active = coordinators.firstOrNull { device ->
                     val status = AppState.deviceStatus.value[device.key]
                     status == DeviceStatus.PLAYING || status == DeviceStatus.PAUSED
-                }
+                } ?: coordinators.firstOrNull()
                 if (active != null) {
                     val sampled = tick % PROGRESS_SAMPLE_EVERY_TICKS == 0
                     if (sampled) {
@@ -1701,6 +1757,15 @@ class SonosCastService : Service() {
                         syncTransportState(active)
                         // 从箱状态跟随主箱（它没有独立传输，不镜像就会停在旧的 PAUSED）
                         AppState.deviceStatus.value[active.key]?.let { mirrorSatelliteStatus(it) }
+                        // 正在播时每拍刷新一次会话进度。
+                        // 会话的 position 只在 setPlaybackState 时写入，系统随后按 speed 外推；
+                        // 不刷新的话，App 里 0:50、锁屏却按一小时前的基准外推到 1:40（用户实测）。
+                        // 官方文档也要求播放中至少每几秒更新一次。
+                        if (!AppState.externalSource.value &&
+                            AppState.deviceStatus.value[active.key] == DeviceStatus.PLAYING
+                        ) {
+                            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING)
+                        }
                         // ① 对账：清单版本变了但没人通知音箱 → 这里兜底重建
                         reconcileQueueIfNeeded(active)
                         // ② 主动自检：音箱队列长度与 App 清单不一致 → 立刻重建并报警
@@ -1723,8 +1788,43 @@ class SonosCastService : Service() {
                         }
                     }
                 }
+                // ── 自适应节拍 ─────────────────────────────────────────────
+                // 旧版固定 1 秒一拍、永不停：用户离开家 40 分钟后，服务仍在每 2 秒
+                // 发 4 个 SOAP（全部超时），CPU 累计 1 小时 13 分、耗电 70%+。
+                val playingNow = AppState.deviceStatus.value.values.any { it == DeviceStatus.PLAYING }
+                val interval = when {
+                    AppState.connectionLost.value -> DISCONNECTED_POLL_MS   // 断连：30 秒探一次
+                    active == null -> IDLE_POLL_MS                          // 没有活跃设备：15 秒
+                    playingNow -> PROGRESS_TICK_MS                          // 正在播：1 秒（进度要顺滑）
+                    else -> PAUSED_POLL_MS                                  // 暂停等机身按键：5 秒
+                }
+                if (interval != lastPollInterval) {
+                    lastPollInterval = interval
+                    LogBus.d(
+                        "轮询节拍 → ${interval}ms（lost=${AppState.connectionLost.value}" +
+                            " active=${active != null} playing=$playingNow)"
+                    )
+                }
+                // ── 会话看门狗 ───────────────────────────────────────────
+                // 锁屏/通知的按钮与进度条只认 MediaSession。任何一条分支漏了
+                // updatePlaybackState，锁屏就停在"正在播放、进度一路走到结尾"
+                // （用户反复遇到的 bug）。这里每拍按真实状态强刷，最多一拍自愈。
+                val wantSessionState =
+                    if (playingNow && !AppState.connectionLost.value) PlaybackStateCompat.STATE_PLAYING
+                    else PlaybackStateCompat.STATE_PAUSED
+                if (wantSessionState != lastSessionState) {
+                    lastSessionState = wantSessionState
+                    updatePlaybackState(wantSessionState)
+                }
+                // 锁只在"真的在播"时持有；暂停 / 断连立即释放，避免整夜挂锁
+                if (playingNow && !AppState.connectionLost.value) {
+                    acquireWakeLock()
+                    acquireWifiLock()
+                } else {
+                    releaseLocks()
+                }
                 tick++
-                delay(PROGRESS_TICK_MS)
+                delay(interval)
             }
         }
     }
@@ -1749,6 +1849,13 @@ class SonosCastService : Service() {
         LogBus.w("与音箱失去联系（Wi-Fi 断开或音箱离线），界面转为暂停")
         AppState.connectionLost.value = true
         cancelAutoAdvance()
+        releaseLocks()
+        // 监听 socket 绑在 wlan 地址上：Wi-Fi 一消失，NanoHTTPD 的 accept 就会持续失败
+        // 并在循环里空转 —— 实测断网稳态 CPU 78 秒/分钟（多核跑满）、整机发烫。
+        // 这里直接停掉服务端，等 Wi-Fi 回来由 ensureServer(force = true) 重建。
+        runCatching { server?.stop() }
+        server = null
+        LogBus.d("已停止媒体服务器（等网络恢复后重建）")
         AppState.deviceStatus.value.keys.forEach { key ->
             AppState.setStatus(key, DeviceStatus.PAUSED)
         }
@@ -2261,7 +2368,15 @@ class SonosCastService : Service() {
                     .setMediaSession(mediaSession?.sessionToken)
                     .setShowActionsInCompactView(0, 1, 2)
             )
-            .addAction(R.drawable.ic_shuffle, I18n.t(Str.MODE_SHUFFLE), shuffleIntent)
+            // 锁屏/通知媒体卡片取的是**通知里的 action**，不是会话的 custom action，
+            // 所以这里的图标也必须跟随状态，且遵循 App 内互斥：
+            //   随机开 → 随机实心、循环空心
+            //   随机关 → 随机空心、循环实心（列表或单曲）
+            .addAction(
+                if (AppState.shuffle.value) R.drawable.ic_shuffle else R.drawable.ic_shuffle_dim,
+                I18n.t(Str.MODE_SHUFFLE),
+                shuffleIntent
+            )
             .addAction(R.drawable.ic_notif_prev, I18n.t(Str.PREV), prevIntent)
             .addAction(
                 if (playing) R.drawable.ic_notif_pause else R.drawable.ic_notif_play,
@@ -2269,7 +2384,18 @@ class SonosCastService : Service() {
                 toggleIntent
             )
             .addAction(R.drawable.ic_notif_next, I18n.t(Str.NEXT), nextIntent)
-            .addAction(R.drawable.ic_repeat, I18n.t(Str.MODE_REPEAT_ALL), repeatIntent)
+            .addAction(
+                when {
+                    AppState.shuffle.value -> R.drawable.ic_repeat_dim
+                    AppState.repeatMode.value == RepeatMode.ONE -> R.drawable.ic_repeat_one
+                    else -> R.drawable.ic_repeat
+                },
+                I18n.t(
+                    if (AppState.repeatMode.value == RepeatMode.ONE) Str.MODE_REPEAT_ONE
+                    else Str.MODE_REPEAT_ALL
+                ),
+                repeatIntent
+            )
             .addAction(0, I18n.t(Str.EXIT), exitIntent)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
 
@@ -2316,6 +2442,12 @@ class SonosCastService : Service() {
      * 两者都带超时，[renewLocks] 会在每次推送时续期，避免长时间播放中途失效。
      */
     private fun renewLocks() {
+        val playing = AppState.deviceStatus.value.values.any { it == DeviceStatus.PLAYING }
+        if (!playing || AppState.connectionLost.value) {
+            // 没在播就别守着 CPU：旧版每 30 分钟无条件续锁，导致熄屏后整夜被唤醒
+            releaseLocks()
+            return
+        }
         releaseLocks()
         acquireWakeLock()
         acquireWifiLock()
@@ -2393,6 +2525,10 @@ class SonosCastService : Service() {
 
         /** 进度显示节拍：1 秒 */
         private const val PROGRESS_TICK_MS = 1_000L
+    // 后台省电：不同状态下轮询间隔（1.2.1 起）
+    private const val PAUSED_POLL_MS = 5_000L
+    private const val IDLE_POLL_MS = 15_000L
+    private const val DISCONNECTED_POLL_MS = 30_000L
 
         /** 提前停止的容差：实际播放时长比「时长 - 20s」还短，就不当成正常放完 */
         private const val EARLY_STOP_TOLERANCE_MS = 20_000L

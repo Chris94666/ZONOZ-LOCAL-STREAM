@@ -82,7 +82,7 @@
             android:name=".service.SonosCastService"
             android:exported="false"
             android:stopWithTask="false"
-            android:foregroundServiceType="dataSync|mediaPlayback" />
+            android:foregroundServiceType="mediaPlayback" />
 
         <!--
           续播闹钟的落点。进程被冻结/回收时，只有精确闹钟能把系统叫醒并投递这条广播；

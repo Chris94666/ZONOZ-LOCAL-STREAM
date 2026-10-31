@@ -73,7 +73,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // 深色 App 必须配浅色系统栏图标：不传参时 enableEdgeToEdge 会跟随系统浅色主题
+        // 给出深色图标，压在纯黑背景上几乎看不见（1.2.1 修）。
+        enableEdgeToEdge(
+            statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         setContent {
             SonosCastTheme {
                 Box(

@@ -11,6 +11,43 @@ ZONOZ local stream —— 把手机本地音乐通过局域网直接推给 Sonos
 
 ---
 
+## v1.2.1 — 2026-10-31
+
+### 中文
+- **耗电修复（重点）**：断网时媒体服务器监听 socket 会在 `accept` 上空转，
+  实测稳态 CPU **78 秒/分钟**、整机发烫。现在一断连就停服务器，Wi-Fi 回来再重建，
+  同场景降到 **0.01 秒/分钟**。
+- **自适应轮询**：正在播 1 秒 / 暂停 5 秒 / 无活跃设备 15 秒 / 断连 30 秒
+  （旧版固定 1 秒且永不停，是耗电第二元凶）。
+- **WakeLock 只在真的在播时持有**：暂停、断连、闲置立即释放；
+  30 分钟续期前也先判断是否在播（旧版永久持锁并一直续期）。
+- **前台服务类型改为 mediaPlayback**：原 `dataSync` 在 Android 14+ 有 6 小时上限，
+  超时会抛 `ForegroundServiceDidNotStopInTimeException` 把进程杀掉。
+- **锁屏/通知与 App 状态彻底同步**：新增会话看门狗（每拍按真实状态强刷）、
+  播放中每拍刷新会话进度、轮询找不到活跃设备时兜底盯第一个主箱。
+  修复"音箱暂停了，锁屏却还在走进度直到歌放完"。
+- **通知栏随机/循环按钮**：改为「点亮=纯白、熄灭=42% 灰」的统一表达，
+  并让动作 ID 随状态变化，绕过 MIUI 对锁屏按钮图标的缓存。
+- **状态栏可读性**：系统栏图标强制白色；播放页顶栏叠一层从封面主色到透明的渐变。
+
+### English
+- Battery: the media server's listening socket spun on `accept` once Wi-Fi disappeared
+  (measured 78 s CPU per minute, phone ran hot). The server is now stopped on disconnect and
+  rebuilt when the network returns — same scenario drops to 0.01 s per minute.
+- Adaptive polling: 1 s playing / 5 s paused / 15 s idle / 30 s disconnected.
+- WakeLock is held only while actually playing; released on pause, disconnect and idle.
+- Foreground service type changed to `mediaPlayback` (the old `dataSync` hits Android 14's
+  six-hour limit and throws `ForegroundServiceDidNotStopInTimeException`).
+- Lock-screen/notification state now converges within one poll: a session watchdog rewrites
+  the real state every tick, the session position is refreshed while playing, and polling falls
+  back to the first coordinator when no device carries a playback status.
+- Notification shuffle/repeat buttons use one brightness rule (lit = white, off = 42% grey) and
+  state-dependent action ids to defeat MIUI's icon caching.
+- Status bar: forced light system-bar icons; the player screen tints the top bar with the cover's
+  dominant colour.
+
+---
+
 ## v1.2 — 2026-10-29
 
 ### 中文

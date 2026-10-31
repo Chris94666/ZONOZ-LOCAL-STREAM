@@ -16,7 +16,7 @@
 >
 > - `versionName` **最多三段数字**：`1.2` 或 `1.2.0` 都可以，
 >   **绝对不允许 `1.1.10` 这种四段写法**。
-> - 当前 `1.2 (versionCode 56)`，下一版顺延为 `1.2.1` 或 `1.3`（仍是三段以内）。
+> - 当前 `1.2.1 (versionCode 57)`，下一版顺延为 `1.2.2` 或 `1.3`（仍是三段以内）。
 > - `versionCode` 每次发布 +1，保持单调递增以便覆盖安装。
 >
 > 改构建脚本/更新日志/Release 标题时三处要保持一致（`build.gradle.kts`、
@@ -39,7 +39,7 @@ App(NanoHTTPD :8080) ──SetAVTransportURI(URL)──► Sonos :1400 /AVTransp
         └────────── GET /stream/<fileId>（Range）───────┘
 ```
 
-包名 `com.sonoscast.local`，当前 **1.2 (versionCode 56)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ local stream，minSdk 26 / targetSdk 35。
+包名 `com.sonoscast.local`，当前 **1.2.1 (versionCode 57)** —— 首个开源版本；应用名已从 SONOS LOCAL CAST 改为 ZONOZ local stream，minSdk 26 / targetSdk 35。
 
 ---
 
